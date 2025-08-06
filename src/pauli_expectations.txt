@@ -1,0 +1,81 @@
+def get_pauli_obs(pauli_input, probs, parallel = False):
+    """
+    Updated version:
+    Expectation is 1 if 
+    
+    
+    Parameters:
+    pauli: a Pauli string, or a list of Pauli strings 
+    counts: a dictionary of counts from a Qiskit simulation
+    
+    Returns:
+    The expectation value of the Pauli string(s)
+    """
+    #print(probs)
+    #Converts the Pauli and the counts to the ZX form:
+    pauli = pauli_input.copy()
+    pauliZX = toZX(pauli)
+    expectations = np.zeros(len(pauliZX))
+    #Iterate through the counts:
+    #Convert to ZX, check commutators
+        
+    def get_val(pauli, shot):
+        yParity_P = getParity(pauli, basis='Y')
+        comm_val = 1-commutes(pauli, shot)#needs to be 0 if they commute
+        yParity_shot = getParity(shot, basis='Y') #This is because the Y shot squared is -1 not 1
+        #print('Y parity: {}, Comm: {}'.format(yParity, comm_val))
+        return np.power(-1, (yParity_P + comm_val) % 2)
+
+    for key in probs.keys():
+        keyZX = toZX(key)
+        if parallel:
+            results = Parallel(n_jobs=-1)(delayed(get_val)(pi,keyZX) for pi in pauliZX)
+            expectations += np.array(results)*probs[key]
+        else:
+            for i in range(len(pauliZX)):
+                #Check if the pauli commutes with the key
+                val = get_val(pauliZX[i], keyZX)
+                expectations[i] += val*probs[key]
+                
+    return expectations
+
+def get_pauli_pauli_obs(pauli_input, probs, parallel = False):
+    """
+    Updated version:
+    Expectation is 1 if 
+    
+    
+    Parameters:
+    pauli: a Pauli string, or a list of Pauli strings 
+    counts: a dictionary of counts from a Qiskit simulation
+    
+    Returns:
+    The expectation value of the Pauli string(s)
+    """
+    #print(probs)
+    #Converts the Pauli and the counts to the ZX form:
+    pauli = pauli_input.copy()
+    pauliZX = toZX(pauli)
+    expectations = np.zeros(len(pauliZX))
+    #Iterate through the counts:
+    #Convert to ZX, check commutators
+        
+    def get_val(pauli, shot):
+        yParity = getParity(pauli, basis='Y')
+        comm_val = 1-commutes(pauli, shot)#needs to be 0 if they commute
+        yParity_shot = getParity(shot, basis='Y') #This is because the Y shot squared is -1 not 1
+        #print('Y parity: {}, Comm: {}'.format(yParity, comm_val))
+        return np.power(-1, (yParity + comm_val + yParity_shot) % 2)
+
+    for key in probs.keys():
+        keyZX = toZX(key)
+        if parallel:
+            results = Parallel(n_jobs=-1)(delayed(get_val)(pi,keyZX) for pi in pauliZX)
+            expectations += np.array(results)*probs[key]
+        else:
+            for i in range(len(pauliZX)):
+                #Check if the pauli commutes with the key
+                val = get_val(pauliZX[i], keyZX)
+                expectations[i] += val*probs[key]
+                
+    return expectations
