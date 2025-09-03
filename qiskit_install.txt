@@ -1,0 +1,15 @@
+Create new conda env
+install via conda forge:
+conda create -n qiskit41 python=3.10 pip -c conda-forge -y
+pip download --no-deps --only-binary=:all: qiskit-aer==0.11.2 -d ./wheels
+conda install -c conda-forge numpy numba==0.56.4 llvmlite scipy -y      
+
+cd ./wheels/ 
+
+pip install ./qiskit_aer-0.11.2-cp310-cp310-macosx_11_0_arm64.whl
+
+conda install qiskit==0.41.0
+
+pip install galois
+pip install tensornetwork
+pip install ./ -e

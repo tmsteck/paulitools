@@ -8,7 +8,7 @@ from numpy import int64
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-from core import GLOBAL_INTEGER, symplectic_inner_product, toZX, commutes
+from core import GLOBAL_INTEGER, symplectic_inner_product, toZX, commutes, symplectic_inner_product_int
 import numpy as np
 try:
     from joblib import Parallel, delayed
@@ -22,6 +22,8 @@ except ImportError:
         return func
     
     Parallel = Dummy
+
+
 
 @njit
 def AtoBinary(pauli):
@@ -267,3 +269,188 @@ def Pauli_expectation(shots, pauli):
         expectation += sign * prob
     
     return expectation
+        
+        
+@njit()
+def filtered_purity(generators, shots, shot_parities=np.zeros(0, dtype=np.int8)):
+    """
+    Computes the filtered purity of some set of generators given noisy shots. 
+    
+    $$
+    \langle (-1)^{\pi_y(i)(\Pi_{g \in G} ((-1)^{\pi_y(g) + \langle i,g \rangle} == 1))} \rangle_{i \in S}
+    $$
+    First, compute the inner product between G and the set of shots S. 
+    Then, compute as vectors the $Y$ parity of each shot, and of each generator
+    
+    
+    Args:
+        samples (ndarray): ZX array of samples (ie, Pauli group element generators $g\in G$)
+        shots (nadarray): ZX array of the shots (ie, direct samples with the conjugate problem)
+        shot_parities (ndarray): Precomputed Y parities of the shots, if available
+    
+    Returns:
+        float: The computed filtered purity
+    """
+    if len(generators) <= 1 or len(shots) <= 1:
+        raise Exception("Input is trivial. either the input is missing the qubit information at index zero, or it is an empty set being passed")
+    
+    k = generators[0]
+    num_generators = len(generators) - 1
+    num_shots = len(shots) - 1
+    
+    # Precompute all parities
+    if len(shot_parities) != num_shots:
+        shot_parities = np.zeros(num_shots, dtype=np.int8)
+        for i in range(num_shots):
+            shot_parities[i] = getParity(np.array([k, shots[i+1]]), 'Y')
+    
+    gen_parities = np.zeros(num_generators, dtype=np.int8)
+    for j in range(num_generators):
+        gen_parities[j] = getParity(np.array([k, generators[j+1]]), 'Y')
+    
+    # Create the full inner product matrix
+    inner_matrix = np.zeros((num_shots, num_generators), dtype=np.int8)
+    for i in range(num_shots):
+        for j in range(num_generators):
+            inner_matrix[i, j] = symplectic_inner_product_int(shots[i+1], generators[j+1], k)
+    
+    # Vectorized computation of the filtered purity
+    # Add generator parities to each row of the inner product matrix
+    exponent_matrix = (inner_matrix + gen_parities.reshape(1, -1)) % 2
+    
+    # Sum along generator axis to get total exponent for each shot
+    total_exponents = np.sum(exponent_matrix, axis=1) % 2
+    
+    # Only keep shots where total exponent is 0 (generator product = +1)
+    valid_shots = (total_exponents == 0)
+    
+    # Compute purity contribution from valid shots
+    purity_contributions = np.where(shot_parities == 0, 1, -1)
+    filtered_contributions = purity_contributions * valid_shots.astype(np.int8)
+    
+    return np.sum(filtered_contributions) / num_shots
+    
+    
+def filtered_purity_reference(generators, shots, shot_parities=None):
+    """
+    Reference implementation of filtered purity - slow but easy to verify.
+    
+    Computes: ⟨(-1)^{π_y(i)} * ∏_{g ∈ G} δ((-1)^{π_y(g) + ⟨i,g⟩} == 1)⟩_{i ∈ S}
+    
+    Where:
+    - π_y(x) is the Y parity of Pauli string x
+    - ⟨i,g⟩ is the symplectic inner product between shot i and generator g
+    - δ(...) is 1 if condition is true, 0 otherwise
+    - The product ∏_{g ∈ G} checks if shot i is stabilized by ALL generators
+    
+    Args:
+        generators (ndarray): ZX array [k, g1, g2, ...] where k is num_qubits
+        shots (ndarray): ZX array [k, s1, s2, ...] where k is num_qubits
+        shot_parities (ndarray, optional): Precomputed Y parities of shots
+    
+    Returns:
+        float: The filtered purity value
+    """
+    if len(generators) <= 1 or len(shots) <= 1:
+        print("Trivial case: not enough generators or shots")
+        return 0.0
+    
+    k = generators[0]  # number of qubits
+    num_generators = len(generators) - 1
+    num_shots = len(shots) - 1
+    
+    print(f"Computing filtered purity for {num_generators} generators and {num_shots} shots on {k} qubits")
+    
+    # Step 1: Precompute Y parities if not provided
+    if shot_parities is None or len(shot_parities) != num_shots:
+        print("Computing shot Y parities...")
+        shot_parities = np.zeros(num_shots, dtype=np.int8)
+        for i in range(num_shots):
+            shot_pauli = np.array([k, shots[i+1]])
+            shot_parities[i] = getParity(shot_pauli, 'Y')
+            if i < 5:  # Debug first few
+                print(f"  Shot {i}: {shot_pauli} -> Y parity = {shot_parities[i]}")
+    
+    # Step 2: Precompute generator Y parities
+    print("Computing generator Y parities...")
+    gen_parities = np.zeros(num_generators, dtype=np.int8)
+    for j in range(num_generators):
+        gen_pauli = np.array([k, generators[j+1]])
+        gen_parities[j] = getParity(gen_pauli, 'Y')
+        print(f"  Generator {j}: {gen_pauli} -> Y parity = {gen_parities[j]}")
+    
+    # Step 3: For each shot, check if it's stabilized by ALL generators
+    print("\nProcessing each shot...")
+    total_purity = 0.0
+    stabilized_shots = 0
+    
+    for i in range(num_shots):
+        shot_val = shots[i+1]
+        shot_y_parity = shot_parities[i]
+        
+        print(f"\nShot {i}: value={shot_val}, Y_parity={shot_y_parity}")
+        
+        # Check stabilization by each generator
+        is_stabilized_by_all = True
+        stabilization_details = []
+        
+        for j in range(num_generators):
+            gen_val = generators[j+1]
+            gen_y_parity = gen_parities[j]
+            
+            # Compute symplectic inner product ⟨shot, generator⟩
+            inner_prod = symplectic_inner_product(
+                np.array([k, shot_val]), 
+                np.array([k, gen_val])
+            )
+            
+            # Compute the exponent for this generator: π_y(g) + ⟨i,g⟩
+            exponent = (gen_y_parity + inner_prod) % 2
+            
+            # Compute the sign: (-1)^exponent
+            sign = 1 if exponent == 0 else -1
+            
+            stabilization_details.append({
+                'generator': j,
+                'gen_val': gen_val,
+                'gen_y_parity': gen_y_parity,
+                'inner_product': inner_prod,
+                'exponent': exponent,
+                'sign': sign
+            })
+            
+            # If any generator gives sign = -1, this shot is not stabilized
+            if sign == -1:
+                is_stabilized_by_all = False
+        
+        # Print detailed stabilization info for first few shots
+        if i < 3:
+            print(f"  Stabilization details:")
+            for detail in stabilization_details:
+                print(f"    Gen {detail['generator']}: "
+                      f"⟨{shot_val},{detail['gen_val']}⟩={detail['inner_product']}, "
+                      f"exp={detail['exponent']}, sign={detail['sign']}")
+        
+        # Only include this shot if stabilized by ALL generators
+        if is_stabilized_by_all:
+            stabilized_shots += 1
+            # Contribution is (-1)^{π_y(shot)}
+            shot_sign = 1 if shot_y_parity == 0 else -1
+            total_purity += shot_sign
+            
+            if i < 3:
+                print(f"  → STABILIZED: contributing {shot_sign} to purity")
+        else:
+            if i < 3:
+                print(f"  → NOT STABILIZED: contributing 0 to purity")
+    
+    # Step 4: Compute final result
+    filtered_purity_value = total_purity / num_shots
+    
+    print(f"\nFinal Results:")
+    print(f"  Total shots: {num_shots}")
+    print(f"  Stabilized shots: {stabilized_shots}")
+    print(f"  Total purity sum: {total_purity}")
+    print(f"  Filtered purity: {total_purity}/{num_shots} = {filtered_purity_value}")
+    
+    return filtered_purity_value

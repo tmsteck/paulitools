@@ -17,6 +17,7 @@ def toZX(input_data):
             - Pauli string (e.g., "XYZI")
             - List of tuples with Pauli characters and their indices (e.g., [('X',0), ('Y',1), ('Z',2)])
             - List of Pauli strings (e.g., ['XX', 'YY', '-YY'])
+            - Binary string representation (e.g., "11000110" = IXYZ, format: Z|X bits)
     
     Returns:
         tuple: (int, np.ndarray): Length of Pauli strings and their integer representations as a numpy array.
@@ -25,15 +26,23 @@ def toZX(input_data):
         raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, or list of Pauli strings.")
     
     valid_characters = {'X', 'Y', 'Z', 'I', '+', '-'}
+    binary_characters = {'0', '1'}
     
+    # Check if input is a binary string (format 6)
+    is_binary_string = False
     if isinstance(input_data, str):
-        if not all(char in valid_characters for char in input_data):
-            raise ValueError("Input string contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', and '-' are allowed.")
+        if all(char in binary_characters for char in input_data):
+            is_binary_string = True
+        elif not all(char in valid_characters for char in input_data):
+            raise ValueError("Input string contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed.")
     elif isinstance(input_data, (list, tuple)):
         for item in input_data:
             if isinstance(item, str):
-                if not all(char in valid_characters for char in item):
-                    raise ValueError("Input list/tuple contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', and '-' are allowed.")
+                if all(char in binary_characters for char in item):
+                    # This is a binary string in a list
+                    continue
+                elif not all(char in valid_characters for char in item):
+                    raise ValueError("Input list/tuple contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed.")
             elif isinstance(item, tuple):
                 for sub_item in item:
                     if isinstance(sub_item, str):
@@ -64,14 +73,50 @@ def toZX(input_data):
             # 'I' means identity, no action needed
         return integer_rep
     
+    def binary_string_to_integer(binary_str, length):
+        """Convert binary string format (Z|X bits) to integer representation."""
+        if len(binary_str) != 2 * length:
+            raise ValueError(f"Binary string length {len(binary_str)} does not match expected length {2 * length} for {length} qubits.")
+        
+        integer_rep = 0  # No sign bit for binary format
+        
+        # First half is Z bits, second half is X bits
+        z_bits = binary_str[:length]
+        x_bits = binary_str[length:]
+        
+        # Set Z bits (positions 1 to length)
+        for i, z_bit in enumerate(z_bits):
+            if z_bit == '1':
+                integer_rep |= (1 << (i + 1))
+        
+        # Set X bits (positions length+1 to 2*length)
+        for i, x_bit in enumerate(x_bits):
+            if x_bit == '1':
+                integer_rep |= (1 << (i + 1 + length))
+        
+        return integer_rep
+    
     if isinstance(input_data, list):
         if all(isinstance(item, str) for item in input_data):
-            length = np.max(np.array([len(pauli) for pauli in input_data]))
-            pauli_integers = np.empty(len(input_data) + 1, dtype=GLOBAL_INTEGER)
-            pauli_integers[0] = length
-            for i, pauli in enumerate(input_data):
-                pauli_integers[i + 1] = pauli_to_integer(pauli, length)
-            return pauli_integers
+            # Check if all items are binary strings
+            all_binary = all(all(char in binary_characters for char in item) for item in input_data)
+            
+            if all_binary:
+                # Handle list of binary strings
+                length = len(input_data[0]) // 2  # Binary strings are 2*qubits long
+                pauli_integers = np.empty(len(input_data) + 1, dtype=GLOBAL_INTEGER)
+                pauli_integers[0] = length
+                for i, binary_str in enumerate(input_data):
+                    pauli_integers[i + 1] = binary_string_to_integer(binary_str, length)
+                return pauli_integers
+            else:
+                # Handle list of Pauli strings
+                length = np.max(np.array([len(pauli) for pauli in input_data]))
+                pauli_integers = np.empty(len(input_data) + 1, dtype=GLOBAL_INTEGER)
+                pauli_integers[0] = length
+                for i, pauli in enumerate(input_data):
+                    pauli_integers[i + 1] = pauli_to_integer(pauli, length)
+                return pauli_integers
         elif all(isinstance(item, tuple) for item in input_data):
             num_qubits = np.max(np.array([index for _, index in input_data])) + 1
             pauli_str = ['I'] * num_qubits
@@ -84,11 +129,20 @@ def toZX(input_data):
             pauli_integers[1] = pauli_to_integer(''.join(pauli_str), num_qubits)
             return pauli_integers
     elif isinstance(input_data, str):
-        length = len(input_data)
-        pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
-        pauli_integers[0] = length
-        pauli_integers[1] = pauli_to_integer(input_data, length)
-        return pauli_integers
+        if is_binary_string:
+            # Handle single binary string
+            length = len(input_data) // 2
+            pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
+            pauli_integers[0] = length
+            pauli_integers[1] = binary_string_to_integer(input_data, length)
+            return pauli_integers
+        else:
+            # Handle single Pauli string
+            length = len(input_data)
+            pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
+            pauli_integers[0] = length
+            pauli_integers[1] = pauli_to_integer(input_data, length)
+            return pauli_integers
     else:
         raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, or list of Pauli strings.")
 
@@ -280,7 +334,7 @@ def symplectic_inner_product_int(int_rep1, int_rep2, length):
     Returns:
         int: Symplectic inner product (0 or 1).
     """
-    product = GLOBAL_INTEGER(0)
+    product = np.int8(0)
     for i in prange(length):
         x1 = (int_rep1 >> (i + 1 + length)) & 1
         z1 = (int_rep1 >> (i + 1)) & 1
@@ -293,8 +347,8 @@ def symplectic_inner_product_int(int_rep1, int_rep2, length):
 @njit()
 def symplectic_inner_product(sym_form1, sym_form2, k=None):
     """
-    Compute the symplectic inner product between two symplectic forms.
-    
+    Compute the symplectic inner product between two symplectic forms. Wrapper for symplectic_inner_product_int, cleans up the symplectic form structure and length comparisons
+
     Args:
         sym_form1 (tuple): First symplectic form as a tuple (length, integer representation).
         sym_form2 (tuple): Second symplectic form as a tuple (length, integer representation).
@@ -339,11 +393,11 @@ def commutes(a, b, length=None):
         int: 1 if the two symplectic forms commute, 0 otherwise.
     """
     if length is not None:
-        return symplectic_inner_product_int(a, b, length) == 0
-    return symplectic_inner_product(a, b) == 0
+        return np.int8(symplectic_inner_product_int(a, b, length) == 0)
+    return np.int8(symplectic_inner_product(a, b) == 0)
 
 
-def commute_array(sym_form_input):
+def bsip_array(sym_form_input):
     """Computes the commutation matrix for a list of symplectic forms
     
     Args:
@@ -354,12 +408,12 @@ def commute_array(sym_form_input):
     """
     n = len(sym_form_input)-1
     length = sym_form_input[0]
-    commutation_matrix = np.zeros((n,n), dtype=GLOBAL_INTEGER)
+    commutation_matrix = np.zeros((n,n), dtype=np.int8)
     for i in range(n):
         for j in range(i,n):
             p1 = sym_form_input[i+1]
             p2 = sym_form_input[j+1]
-            commutation_matrix[i,j] = commutes(p1, p2, length=length)
+            commutation_matrix[i,j] = symplectic_inner_product_int(p1, p2, length=length)
             commutation_matrix[j,i] = commutation_matrix[i,j]
     return commutation_matrix
 
@@ -371,31 +425,33 @@ def unpack_sym_forms_to_matrices(sym_form_input):
     Converts a list of (length, integer) symplectic forms into Z and X bit matrices.
 
     Args:
-        sym_form_input (list): A list of tuples, where each is (length, int_representation).
+        sym_form_input (list): A list of tuples, where each is (length, int_array).
 
     Returns:
         tuple[np.ndarray, np.ndarray]: A tuple containing the X-matrix and Z-matrix.
     """
     num_operators = len(sym_form_input)
     if num_operators == 0:
-        return np.array([[]]), np.array([[]])
+        return np.zeros((0, 0), dtype=np.uint8), np.zeros((0, 0), dtype=np.uint8)
 
     # Assume the number of qubits is consistent and defined by the first element
     num_qubits = sym_form_input[0][0]
 
-    # Pre-allocate matrices for performance
+    # Pre-allocate matrices for performance - use uint8 here, convert later for matmul
     x_matrix = np.zeros((num_operators, num_qubits), dtype=np.uint8)
     z_matrix = np.zeros((num_operators, num_qubits), dtype=np.uint8)
     
     # This single loop unpacks the data; it's much faster than the previous N^2 loop.
-    for i, (length, int_rep) in enumerate(sym_form_input):
+    for i in range(num_operators):
+        length, int_rep_array = sym_form_input[i]
+        int_rep = int_rep_array[0]  # Extract the integer from the array
         if length > 0:
-            qubit_indices = np.arange(length)
-            # Use bit-shifting to extract X and Z parts for each operator
-            x_bits = (int_rep[0] >> (qubit_indices + 1)) & 1
-            z_bits = (int_rep[0] >> (qubit_indices + 1 + length)) & 1
-            x_matrix[i, :length] = x_bits
-            z_matrix[i, :length] = z_bits
+            for qubit_idx in range(length):
+                # Use bit-shifting to extract X and Z parts for each operator
+                x_bit = (int_rep >> (qubit_idx + 1 + length)) & 1
+                z_bit = (int_rep >> (qubit_idx + 1)) & 1
+                x_matrix[i, qubit_idx] = x_bit
+                z_matrix[i, qubit_idx] = z_bit
             
     return x_matrix, z_matrix
 
@@ -405,19 +461,33 @@ def commute_array_fast(sym_form_input):
     Computes the commutation matrix for a list of symplectic forms using vectorization.
 
     Args:
-        sym_form_input (list): A list of tuples, where each is (length, int_representation).
+        sym_form_input (np.ndarray): Array containing all the symplectic forms [length, int1, int2, ...]
 
     Returns:
         np.ndarray: The (N, N) commutation matrix where 1 means commute, 0 means anti-commute.
     """
-    # 1. Unpack the integer representations into a standard NumPy bit-array format.
-    x_matrix, z_matrix = unpack_sym_forms_to_matrices(sym_form_input)
-
-    # 2. Compute the symplectic inner product for all pairs using matrix multiplication.
-    # The result is 0 if they commute and 1 if they anti-commute.
-    inner_product_matrix = (x_matrix @ z_matrix.T + z_matrix @ x_matrix.T) % 2
+    # Convert numpy array format to list of tuples format for unpack_sym_forms_to_matrices
+    length = sym_form_input[0]
+    n_operators = len(sym_form_input) - 1
     
-    # 3. Invert the bits to match the `commutes` function behavior (1 for commute).
+    # Create list of tuples in the format (length, [int_representation])
+    sym_form_list = []
+    for i in range(1, len(sym_form_input)):
+        # Each operator needs to be a tuple (length, array_with_single_int)
+        sym_form_list.append((length, np.array([sym_form_input[i]])))
+    
+    # 1. Unpack the integer representations into a standard NumPy bit-array format.
+    x_matrix, z_matrix = unpack_sym_forms_to_matrices(sym_form_list)
+
+    # 2. Convert to int64 for matrix operations (Numba requirement)
+    x_matrix_int = x_matrix.astype(np.int64)
+    z_matrix_int = z_matrix.astype(np.int64)
+
+    # 3. Compute the symplectic inner product for all pairs using matrix multiplication.
+    # Use np.dot instead of @ operator for Numba compatibility
+    inner_product_matrix = (np.dot(x_matrix_int, z_matrix_int.T) + np.dot(z_matrix_int, x_matrix_int.T)) % 2
+    
+    # 4. Invert the bits to match the `commutes` function behavior (1 for commute).
     commutation_matrix = 1 - inner_product_matrix
     
-    return commutation_matrix.astype(np.uint8)
+    return commutation_matrix.astype(GLOBAL_INTEGER)

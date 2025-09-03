@@ -96,24 +96,89 @@ class TestRadical(unittest.TestCase):
         self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2_pt = toZX_pt(["XX", "XI", "ZZ"]) #L = 1
         self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
-        
         self.set_1 = toZX(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2 = toZX(["XX", "XI", "ZZ"]) #L = 1
         self.set_3 = toZX(["ZI", "XI", "IX","IZ"]) #L = 2
-        
+
     def test_commuting(self):
         pt_output = radical_pt(self.set_1_pt)
         output = radical(self.set_1)
         np.testing.assert_array_equal(output, pt_output)
-        #np.testing.assert_array_equal(pt_output, expected_output)
+
     def test_L1(self):
         pt_output = radical_pt(self.set_2_pt)
         output = radical(self.set_2)
         np.testing.assert_array_equal(output, pt_output)
+
     def test_L2(self):
         pt_output = radical_pt(self.set_3_pt)
         output = radical(self.set_3)
         np.testing.assert_array_equal(output, pt_output)
+
+    def test_random_equivalence(self):
+        # Compare ptgalois and numba radical for random 16-qubit, 8-string sets
+        n_qubits = 16
+        n_paulis = 8
+        n_trials = 20
+        for _ in range(n_trials):
+            # Each Pauli string is a random binary string of length 2*n_qubits (ZX form)
+            paulis_bin = np.random.randint(0, 2, (n_paulis, 2*n_qubits), dtype=np.uint8)
+            # Convert to integer representation (sign bit = 0)
+            paulis_int = np.zeros(n_paulis, dtype=GLOBAL_INTEGER)
+            for i in range(n_paulis):
+                val = 0
+                for j in range(2*n_qubits):
+                    if paulis_bin[i, j]:
+                        val |= (1 << (2*n_qubits - j))
+                paulis_int[i] = val
+            zx_numba = np.zeros(n_paulis+1, dtype=GLOBAL_INTEGER)
+            zx_numba[0] = n_qubits
+            zx_numba[1:] = paulis_int
+            zx_ptgalois = pt.converter.toZX([pt.converter.toString(val) for val in paulis_int])
+            # Compare radical
+            rad_numba = radical(zx_numba)
+            rad_ptgalois = radical_pt(zx_ptgalois)
+            # Compare as sets of rows (order may differ)
+            self.assertEqual(rad_numba.shape, rad_ptgalois.shape)
+            if rad_numba.shape[0] > 0:
+                self.assertTrue(np.all(np.sort(rad_numba, axis=0) == np.sort(rad_ptgalois, axis=0)))
+
+    def test_radical_speed(self):
+        import time
+        n_qubits = 16
+        n_paulis = 8
+        n_trials = 1001
+        zx_numba_list = []
+        zx_ptgalois_list = []
+        for _ in range(n_trials):
+            paulis_bin = np.random.randint(0, 2, (n_paulis, 2*n_qubits), dtype=np.uint8)
+            paulis_int = np.zeros(n_paulis, dtype=GLOBAL_INTEGER)
+            for i in range(n_paulis):
+                val = 0
+                for j in range(2*n_qubits):
+                    if paulis_bin[i, j]:
+                        val |= (1 << (2*n_qubits - j))
+                paulis_int[i] = val
+            zx_numba = np.zeros(n_paulis+1, dtype=GLOBAL_INTEGER)
+            zx_numba[0] = n_qubits
+            zx_numba[1:] = paulis_int
+            zx_numba_list.append(zx_numba)
+            zx_ptgalois = pt.converter.toZX([pt.converter.toString(val) for val in paulis_int])
+            zx_ptgalois_list.append(zx_ptgalois)
+        # Warm up Numba
+        radical(zx_numba_list[0])
+        # Time Numba radical
+        t0 = time.time()
+        for zx in zx_numba_list:
+            radical(zx)
+        t1 = time.time()
+        # Time ptgalois radical
+        for zx in zx_ptgalois_list:
+            radical_pt(zx)
+        t2 = time.time()
+        print(f"\nRadical speed test (n_trials={n_trials}, n_qubits={n_qubits}, n_paulis={n_paulis}):")
+        print(f"Numba radical:   {t1-t0:.4f} s")
+        print(f"ptgalois radical: {t2-t1:.4f} s")
 
 if __name__ == '__main__':
     unittest.main()

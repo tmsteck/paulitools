@@ -16,97 +16,145 @@ from galois import GF2
 
 import numpy as np
 
-#@njit() #GOOD, TESTED
+from numba import njit
+
+@njit(cache=True)
 def row_reduce(input_pauli):
     """
     Perform row reduction on integers using bitwise operations,
     and remove zero rows from the result.
-
     Parameters:
-        input_pauli (list of ints): The first element is k (an integer),
-                             the rest are integers representing rows.
-
+        input_pauli (np.ndarray): The first element is k (an integer),
+                                  the rest are integers representing rows.
     Returns:
-        list of ints: The reduced integers, with k at the zero index,
-                      and zero rows removed.
+        np.ndarray: The reduced integers, with k at the zero index,
+                   and zero rows removed.
     """
-    # Extract k and calculate the number of bits used
     data = input_pauli.copy()
     k = data[0]
     num_bits = 2 * k + 1  # Total bits including the sign bit
-    num_bits_without_sign = num_bits - 1  # Exclude the sign bit
-
-    # Extract the integer rows (excluding the zero index)
-    int_rows = data[1:]
-
-    # Remove the sign bit (rightmost bit) by shifting right
-    for i in range(len(int_rows)):
-        int_rows[i] = int_rows[i] >> 1
-
+    num_bits_wo_sign = num_bits - 1
+    int_rows = data[1:].copy()
     n_rows = len(int_rows)
-    n_cols = num_bits_without_sign
-
+    n_cols = num_bits_wo_sign
+    # Remove the sign bit (rightmost bit) by shifting right
+    for i in range(n_rows):
+        int_rows[i] = int_rows[i] >> 1
     pivot_row = 0
-
-    # Forward elimination to get row echelon form
-
-    for col in range(n_cols - 1, -1, -1):  # Start from the most significant bit
+    for col in range(n_cols - 1, -1, -1):
         found_pivot = False
         for row in range(pivot_row, n_rows):
             if (int_rows[row] >> col) & 1:
                 if row != pivot_row:
-                    # Swap rows
-                    temp = int_rows[pivot_row]
+                    tmp = int_rows[pivot_row]
                     int_rows[pivot_row] = int_rows[row]
-                    int_rows[row] = temp
+                    int_rows[row] = tmp
                 found_pivot = True
                 break
         if not found_pivot:
             continue
-        # Eliminate entries below the pivot
         for row in range(pivot_row + 1, n_rows):
             if (int_rows[row] >> col) & 1:
                 int_rows[row] ^= int_rows[pivot_row]
         pivot_row += 1
         if pivot_row >= n_rows:
             break
-
-    # Backward substitution to get reduced row echelon form
+    # Backward substitution
     for i in range(pivot_row - 1, -1, -1):
         row_val = int_rows[i]
-        # Find the pivot column in this row
+        pivot_col = -1
         for col in range(n_cols - 1, -1, -1):
             if (row_val >> col) & 1:
                 pivot_col = col
                 break
-        else:
-            continue  # Skip if the row is zero
-        # Eliminate entries above the pivot
+        if pivot_col == -1:
+            continue
         for row in range(i):
             if (int_rows[row] >> pivot_col) & 1:
                 int_rows[row] ^= int_rows[i]
-
     # Remove zero rows and shift left to restore the sign bit position
     reduced_int_rows = []
     for row in int_rows:
         if row != 0:
             reduced_row = row << 1  # Restore sign bit position (set to zero)
             reduced_int_rows.append(reduced_row)
-
-    # Return the data with k at the zero index
     result = np.zeros(len(reduced_int_rows) + 1, dtype=GLOBAL_INTEGER)
     result[0] = k
-    result[1:] = reduced_int_rows
-    #result.extend(reduced_int_rows)
+    for i in range(len(reduced_int_rows)):
+        result[i+1] = reduced_int_rows[i]
     return result
 
+@njit(cache=True)
+def generators(input_pauli):
+    """Just a wrapper around row_reduce
+    """
+    return row_reduce(input_pauli)
 
 # NO NUMBA, BAD
-def null_space(A, rcond=None):
-    #Conver to a GF2 matrix:
-    A = GF2(A)
-    return A.null_space().astype(GLOBAL_INTEGER)
-    #return Q#.T
+
+# Numba-compatible null space over GF(2) using row_reduce as a subroutine
+@njit(cache=True)
+def null_space(A):
+    """
+    Compute the null space of a binary matrix A (mod 2) using row-reduction.
+    Returns a matrix whose rows form a basis for the null space.
+    """
+    m, n = A.shape
+    A = A.copy()
+    pivots = np.full(m, -1, dtype=np.int32)
+    row = 0
+    for col in range(n):
+        sel = -1
+        for r in range(row, m):
+            if A[r, col]:
+                sel = r
+                break
+        if sel == -1:
+            continue
+        if sel != row:
+            tmp = A[row].copy()
+            A[row] = A[sel]
+            A[sel] = tmp
+        pivots[row] = col
+        for r in range(row + 1, m):
+            if A[r, col]:
+                A[r] ^= A[row]
+        row += 1
+        if row == m:
+            break
+    # Backward elimination
+    for i in range(row-1, -1, -1):
+        col = pivots[i]
+        if col == -1:
+            continue
+        for r in range(i):
+            if A[r, col]:
+                A[r] ^= A[i]
+    # Identify free variables (columns not used as pivots)
+    used = np.zeros(n, dtype=np.bool_)
+    for i in range(row):
+        if pivots[i] != -1:
+            used[pivots[i]] = True
+    nullity = 0
+    for j in range(n):
+        if not used[j]:
+            nullity += 1
+    if nullity == 0:
+        return np.zeros((0, n), dtype=np.uint8)
+    N = np.zeros((nullity, n), dtype=np.uint8)
+    idx = 0
+    for fv in range(n):
+        if not used[fv]:
+            N[idx, fv] = 1
+            for i in range(row):
+                col = pivots[i]
+                if col == -1:
+                    continue
+                N[idx, col] = A[i, fv]
+            idx += 1
+    return N.astype(GLOBAL_INTEGER)
+
+
 
 @njit() #TESTED, basic
 def inner_product(paulis):
@@ -155,7 +203,9 @@ def radical(paulis, reduced=False):
     #    paulis.row_reduce().row_space()
     #print('GSG', inner_product(paulis, paulis))
     return null_space(inner_product(reduced_pauli))
-    
+
+
+
 
 def centralizer(pauli_input, reduced=False):
     """Returns the centralizer of the input Pauli group. First computes the radical, then takes the kernel of the reduced Pauli input basis ker(P)@P.
