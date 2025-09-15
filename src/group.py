@@ -205,7 +205,37 @@ def radical(paulis, reduced=False):
     return null_space(inner_product(reduced_pauli))
 
 
+def differences(paulis, paulis2 = None):
+    """
+    Computes the bell difference between samples. Returns paulis[i] AND paulis [i+1] cyclically
 
+    Args:
+        paulis (ndarray): ZX form Pauli strings
+        paulis2 (ndarray, optional): If provided, computes differences between paulis and paulis2 instead of cyclic differences within paulis.
+    Returns:
+        ndarray: Array of differences
+    """
+    if paulis2 is not None:
+        assert paulis.shape == paulis2.shape, "paulis and paulis2 must have the same shape"
+        assert paulis[0] == paulis2[0], "paulis and paulis2 must have the same k value"    
+    n = paulis.shape[0]
+    k = paulis[0]
+    if paulis2 is not None:
+        diffs = np.zeros((n), dtype=np.uint8)
+        for i in range(1,n):
+            diffs[i] = paulis[i] ^ paulis2[i]
+        diffs[0] = k
+        return diffs
+    else:
+        diffs = np.zeros((n), dtype=np.uint8)
+        for i in range(1,n):
+            if i == n-1:
+                diffs[i] = paulis[i] ^ paulis[1]
+            else:
+                # This could be speed up by leaving out the %n and just ending up with n-1 instead of n terms
+                diffs[i] = paulis[i] ^ paulis[(i + 1)]
+        diffs[0] = k
+        return diffs
 
 def centralizer(pauli_input, reduced=False):
     """Returns the centralizer of the input Pauli group. First computes the radical, then takes the kernel of the reduced Pauli input basis ker(P)@P.

@@ -9,7 +9,7 @@ from numba.types import int8, float16
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from core import toZX, toString, concatenate_ZX, right_pad, left_pad, symplectic_inner_product, commutes, GLOBAL_INTEGER
-from group import row_reduce, inner_product, null_space, radical
+from group import row_reduce, inner_product, null_space, radical, differences
 from ptgalois.converter import toZX as toZX_pt
 from ptgalois.group import inner_product as inner_product_pt
 from ptgalois.group import radical as radical_pt
@@ -17,7 +17,41 @@ from galois import GF2
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
 import ptgalois as pt
-# Unit tests usin
+# Unit tests using unittest framework
+
+class TestDifferences(unittest.TestCase):
+    def test_differences_single(self):
+        input = toZX(["XX", "YY", "ZZ"])
+        expected_output = toZX(["ZZ", "XX", "YY"])
+        output = differences(input)
+        np.testing.assert_array_equal(output, expected_output)
+        
+    def test_differences_double(self):
+        input1 = toZX(["XX", "YY", "ZZ"])
+        input2 = toZX(["XZ", "YX", "ZY"])
+        expected_output = toZX(["IY", "IZ", "IX"])
+        output = differences(input1, input2)
+        np.testing.assert_array_equal(output, expected_output)
+    
+    def test_assert_double(self):
+        input1 = toZX(["XX", "YY", "ZZ"])
+        input2 = toZX(["XZ", "YX"])
+        with self.assertRaises(AssertionError) as e:
+            output = differences(input1, input2)
+            # Check that the error message is as expected
+            self.assertEqual(str(e), "paulis and paulis2 must have the same shape")
+        input3 = toZX(["XXX", "YYY", "ZZZ"])
+        with self.assertRaises(AssertionError) as e:
+            output = differences(input2, input3)
+            self.assertEqual(str(e), "paulis and paulis2 must have the same k value")
+        
+    def test_pad_double(self):
+        input1 = toZX(["XX", "YY", "ZZ"])
+        input2 = toZX(["X", "Y", "Z"])
+        expected_output = toZX(["IX", "IY", "IZ"])
+        output = differences(input1, right_pad(input2, 2))
+        np.testing.assert_array_equal(output, expected_output)
+
 
 class TestRowReduce(unittest.TestCase):
     def test_single_qubit(self):
