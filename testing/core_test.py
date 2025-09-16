@@ -151,6 +151,50 @@ class TestConvertToIntegerRepresentation(unittest.TestCase):
         output2 = toZX(pauli_list)
         self.assertEqual(output2[0], 1)  # 1 qubit each
 
+    def test_binary_string_multi_qubit_list(self):
+        """Test multi-qubit binary strings in lists - matches ptgalois behavior"""
+        # Test case that matches ptgalois: ['0101', '1111'] -> ['IY', 'YY']
+        binary_list = ['0101', '1111']
+        result = toZX(binary_list)
+        
+        # Compare with expected result based on bit interpretation:
+        # '0101': Z=01, X=01 -> q0:(Z=0,X=0)=I, q1:(Z=1,X=1)=Y -> IY
+        # '1111': Z=11, X=11 -> q0:(Z=1,X=1)=Y, q1:(Z=1,X=1)=Y -> YY
+        expected = toZX(['IY', 'YY'])
+        np.testing.assert_array_equal(result, expected)
+        
+        # Verify the conversion back to strings
+        result_strings = toString(result)
+        self.assertEqual(result_strings, '+IY, +YY')
+
+    def test_binary_string_bit_interpretation(self):
+        """Test that binary string bit interpretation follows Z|X format correctly"""
+        # Test various 2-qubit combinations to verify bit order
+        test_cases = [
+            ('0000', 'II'),  # Z=00, X=00
+            ('0001', 'IX'),  # Z=00, X=01  
+            ('0010', 'XI'),  # Z=00, X=10
+            ('0011', 'XX'),  # Z=00, X=11
+            ('0100', 'IZ'),  # Z=01, X=00
+            ('0101', 'IY'),  # Z=01, X=01
+            ('0110', 'XZ'),  # Z=01, X=10
+            ('0111', 'XY'),  # Z=01, X=11
+            ('1000', 'ZI'),  # Z=10, X=00
+            ('1001', 'ZX'),  # Z=10, X=01
+            ('1010', 'YI'),  # Z=10, X=10
+            ('1011', 'YX'),  # Z=10, X=11
+            ('1100', 'ZZ'),  # Z=11, X=00
+            ('1101', 'ZY'),  # Z=11, X=01
+            ('1110', 'YZ'),  # Z=11, X=10
+            ('1111', 'YY'),  # Z=11, X=11
+        ]
+        
+        for binary_str, expected_pauli in test_cases:
+            with self.subTest(binary=binary_str, expected=expected_pauli):
+                binary_result = toZX(binary_str)
+                pauli_result = toZX(expected_pauli)
+                np.testing.assert_array_equal(binary_result, pauli_result)
+
 class TestConvertFromIntegerRepresentation(unittest.TestCase):
     def test_individual_paulis(self):
         inputs_and_expected = [

@@ -13,17 +13,38 @@ def toZX(input_data):
     Convert different forms of Pauli string representations to an efficient integer representation.
     
     Args:
-        input_data (str, list, tuple, list of str): Input representation of Pauli string.
+        input_data (str, list, tuple, list of str, np.ndarray): Input representation of Pauli string.
             - Pauli string (e.g., "XYZI")
             - List of tuples with Pauli characters and their indices (e.g., [('X',0), ('Y',1), ('Z',2)])
             - List of Pauli strings (e.g., ['XX', 'YY', '-YY'])
             - Binary string representation (e.g., "11000110" = IXYZ, format: Z|X bits)
+            - NumPy array of binary arrays in ZX form (e.g., np.array([[1,1,0,0], [0,1,1,0]]))
+            - Single binary array in ZX form (e.g., np.array([1,1,0,0]))
     
     Returns:
         tuple: (int, np.ndarray): Length of Pauli strings and their integer representations as a numpy array.
     """
-    if not isinstance(input_data, (str, list, tuple)):
-        raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, or list of Pauli strings.")
+    if not isinstance(input_data, (str, list, tuple, np.ndarray)):
+        raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, list of Pauli strings, or numpy array.")
+    
+    # Handle NumPy array inputs (binary arrays in ZX form)
+    if isinstance(input_data, np.ndarray):
+        # Convert NumPy arrays to binary strings and use existing logic
+        if input_data.ndim == 1:
+            # Single binary array - convert to binary string
+            if len(input_data) % 2 != 0:
+                raise ValueError(f"Binary array length {len(input_data)} must be even (Z|X format)")
+            binary_string = ''.join(str(int(bit)) for bit in input_data)
+            return toZX(binary_string)  # Recursive call with binary string
+            
+        elif input_data.ndim == 2:
+            # Multiple binary arrays - convert each row to binary string
+            if input_data.shape[1] % 2 != 0:
+                raise ValueError(f"Binary array width {input_data.shape[1]} must be even (Z|X format)")
+            binary_strings = [''.join(str(int(bit)) for bit in row) for row in input_data]
+            return toZX(binary_strings)  # Recursive call with list of binary strings
+        else:
+            raise ValueError("NumPy array input must be 1D or 2D")
     
     valid_characters = {'X', 'Y', 'Z', 'I', '+', '-'}
     binary_characters = {'0', '1'}
