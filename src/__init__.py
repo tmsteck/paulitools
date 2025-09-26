@@ -1,6 +1,6 @@
 # Import core functions for Pauli string manipulation
 from .core import (
-    toZX, toString, right_pad, left_pad, concatenate_ZX,
+    toZX, toString, right_pad, left_pad, append,
     symplectic_inner_product, symplectic_inner_product_int,
     commutes, bsip_array, commute_array_fast,
     unpack_sym_forms_to_matrices, GLOBAL_INTEGER
@@ -21,7 +21,7 @@ from .util import (
 # Define what gets imported with "from paulitools import *"
 __all__ = [
     # Core functions
-    'toZX', 'toString', 'right_pad', 'left_pad', 'concatenate_ZX',
+    'toZX', 'toString', 'right_pad', 'left_pad', 'append',
     'symplectic_inner_product', 'symplectic_inner_product_int',
     'commutes', 'bsip_array', 'commute_array_fast',
     'unpack_sym_forms_to_matrices', 'GLOBAL_INTEGER',

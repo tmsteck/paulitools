@@ -267,7 +267,7 @@ def right_pad(sym_form, target_length):
 #1D list of tuples(int, int_array) --> tuple(int, int_array)
 #@jit(types.Tuple((int64, types.Array(int64, 1,'C')))(types.List(types.Tuple((int64, types.Array(int64, 1,'C')))),), nopython=True)
 @njit()
-def concatenate_ZX(sym_forms):
+def append(sym_forms):
     """
     Concatenate a list of symplectic forms by right padding everything that's smaller than the maximum length.
     

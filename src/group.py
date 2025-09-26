@@ -205,6 +205,7 @@ def radical(paulis, reduced=False):
         reduced_pauli = paulis.copy()
     return null_space(inner_product(reduced_pauli))
 
+
 @njit(cache=True)
 def differences(paulis, paulis2 = None):
     """
@@ -237,6 +238,7 @@ def differences(paulis, paulis2 = None):
                 diffs[i] = paulis[i] ^ paulis[(i + 1)]
         diffs[0] = k
         return diffs
+
 
 def centralizer(pauli_input, reduced=False):
     """Returns the centralizer of the input Pauli group. First computes the radical, then takes the kernel of the reduced Pauli input basis ker(P)@P.
