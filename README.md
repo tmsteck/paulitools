@@ -2,93 +2,113 @@
 
 PauliTools is a Python library for efficient manipulation and analysis of Pauli strings using binary symplectic representations. The library leverages Numba for high-performance computations and provides tools for quantum group theory operations.
 
-## Package Structure
+## Package Structure & Quick Reference
 
-The `src/` directory contains the core functionality of PauliTools:
+PauliTools ships as a single `paulitools` Python package. You can treat it as a
+black box—every public entrypoint is exported at module level—so browsing the
+`src/` tree is optional. The sections below highlight the most commonly used
+APIs.
 
-### 📁 Core Files
+### Quickstart
 
-#### `core.py` - Central Pauli String Operations
-The main module containing fundamental operations for Pauli string manipulation.
-
-**Key Functions:**
-- **`toZX(input_data)`** - Convert various Pauli string formats to efficient integer representation
-  - Supports: strings ("XYZI"), lists of strings (['XX', 'YY']), tuples with indices [('X',0), ('Y',1)]
-  - Returns: numpy array with length and integer representations
-  
-- **`toString(integer_rep)`** - Convert integer representation back to Pauli string format
-  - Input: numpy array with integer representations
-  - Output: string representation with signs (e.g., '+XYZI', '-ZZ')
-
-- **Padding Operations:**
-  - **`right_pad(sym_form, target_length)`** - Right-pad symplectic form with identities
-  - **`left_pad(sym_form, result_size)`** - Left-pad symplectic form maintaining qubit indexing
-  - **`concatenate_ZX(sym_forms)`** - Concatenate multiple symplectic forms with automatic padding
-
-- **Symplectic Operations:**
-  - **`symplectic_inner_product(sym_form1, sym_form2)`** - Compute symplectic inner product
-  - **`symplectic_inner_product_int(int_rep1, int_rep2, length)`** - Integer version for performance
-  - **`commutes(a, b, length=None)`** - Check if two Pauli operators commute
-
-- **Commutation Analysis:**
-  - **`commute_array(sym_form_input)`** - Generate commutation matrix for multiple Pauli operators
-  - **`commute_array_fast(sym_form_input)`** - Vectorized version using matrix operations
-  - **`unpack_sym_forms_to_matrices(sym_form_input)`** - Convert to X/Z bit matrices for fast operations
-
-#### `group.py` - Pauli Group Theory Operations
-Advanced group-theoretic operations for stabilizer groups and quantum error correction.
-
-**Key Functions:**
-- **`row_reduce(input_pauli)`** - Gaussian elimination on Pauli operators using bitwise operations
-  - Performs row reduction over GF(2) to find linearly independent generators
-  - Removes zero rows and maintains sign bit integrity
-  
-- **`null_space(A)`** - Compute null space of binary matrix over GF(2)
-  - Numba-optimized implementation using row reduction
-  - Essential for finding stabilizer group properties
-  
-- **`inner_product(paulis)`** - Compute symplectic inner product matrix
-  - Creates NxN matrix of all pairwise symplectic inner products
-  - Used for analyzing commutation relationships in groups
-
-- **`radical(paulis, reduced=False)`** - Find the radical (center) of a Pauli group
-  - Computes generators that commute with all group elements
-  - Optional pre-reduction for performance
-
-- **`centralizer(pauli_input, reduced=False)`** - Compute the centralizer of a Pauli group
-  - Finds all operators that commute with the given group
-  - Combines radical computation with kernel analysis
-
-#### `util.py` - Utility Functions and Analysis Tools
-Supporting functions for probability calculations and specialized operations.
-
-**Key Functions:**
-- **Binary Conversion:**
-  - **`toBinary(pauli)`** - Convert Pauli integers to binary matrix representation
-  - **`convert_array_type(arr, dtype)`** - Type conversion helper for Numba compatibility
-
-- **Parity Analysis:**
-  - **`getParity(pauli, basis='Y')`** - Calculate parity of X, Y, or Z operators in a Pauli string
-  - **`popcount(n)`** - Efficient bit counting (Hamming weight)
-
-- **Expectation Value Calculations:**
-  - **`get_pauli_obs(pauli_input, probs, parallel=False)`** - Calculate Pauli operator expectation values
-  - **`get_pauli_pauli_obs(pauli_input, probs, parallel=False)`** - Include Y-parity of measurement outcomes
-  - **`Pauli_expectation(shots, pauli)`** - Direct expectation calculation from shot data
-
-- **Advanced Group Operations:**
-  - **`getCentralizer(counts, return_generators=False)`** - Generate and analyze stabilizer groups from experimental data
-  - Integrates with quantum measurement data to infer underlying group structure
-
-#### `__init__.py` - Package Initialization
-Exposes all major functions from core, group, and util modules for easy access:
-```python
-from .core import *
-from .group import *  
-from .util import *
+```bash
+pip install paulitools
 ```
 
-This allows direct importing: `from paulitools import toZX, commutes, radical, getParity`
+```python
+from paulitools import (
+    toZX, toZX_extended,
+    row_reduce, radical,
+    save_pauli_data, append_pauli_data, load_pauli_data,
+)
+
+# Convert strings to binary symplectic form
+gens = toZX(["XX", "YY", "ZZ"])
+
+# Analyse group structure
+reduced = row_reduce(gens)
+center = radical(gens)
+
+# Persist results incrementally
+save_pauli_data("stabilizers.pauli", gens)
+append_pauli_data("stabilizers.pauli", toZX(["XI", "IZ"]))
+
+restored = load_pauli_data("stabilizers.pauli")
+```
+
+### Storage & Persistence API
+
+The `storage` module provides an append-friendly container format that stores
+NumPy `.npy` payloads inside a log-structured binary file. Use it whenever you
+need to checkpoint work or build large operator libraries.
+
+| Function | Description |
+| --- | --- |
+| `save_pauli_data(path, data, append=False, user_metadata=None)` | Write a legacy ZX array or `PauliIntCollection` to disk. Set `append=True` to add a new batch to an existing file. |
+| `append_pauli_data(path, data)` | Shorthand for `save_pauli_data(..., append=True)`. |
+| `load_pauli_data(path, include_metadata=False)` | Read and reconstruct the stored operators. Returns either the legacy array or a `PauliIntCollection`; optionally returns `(data, metadata)` when `include_metadata=True`. |
+| `iter_pauli_records(path)` | Stream batches from disk without materialising the full dataset. Useful for large archives. |
+| `SerializationError` | Raised when file headers, chunk sizes, or checksums fail validation. |
+
+> **Tip:** All payloads remain NumPy-portable because they are stored as
+> `.npy` blobs. If you change the number of qubits or the ZX length, open a new
+> file; appends enforce consistent dimensions to keep the container compact.
+
+### Module Overview
+
+The following tables summarise the rest of the public API. All functions are
+importable directly from `paulitools`.
+
+#### Core Operations (`paulitools.core`)
+
+| Function | Purpose |
+| --- | --- |
+| `toZX(input_data, fast_input_type=None)` | Parse Pauli strings, tuples, or binary/eigen arrays into legacy ZX integer form. Fast paths available via ``fast_input_type``. |
+| `toZX_extended(input_data, force_large=False)` | Automatically selects the large-operator backend (`PauliIntCollection`) when the system exceeds 31 qubits. |
+| `toString(integer_rep)` / `toString_extended(pauli_data)` | Convert legacy or extended forms back to human-readable strings. |
+| `right_pad`, `left_pad`, `append` | Resize or concatenate symplectic forms. |
+| `symplectic_inner_product`, `symplectic_inner_product_extended` | Compute the symplectic inner product for legacy or mixed representations. |
+| `commutes`, `commutes_extended` | Check pairwise commutation. |
+| `commute_array_fast`, `bsip_array` | Build commutation matrices for operator sets. |
+| `to_standard_if_possible` | Down-convert a large representation to legacy form when the qubit count permits. |
+
+#### Group Theory (`paulitools.group`)
+
+| Function | Purpose |
+| --- | --- |
+| `row_reduce(paulis)` | Gaussian elimination over GF(2) to find independent generators. |
+| `row_space(paulis)` | Generate the row space of an operator set. |
+| `null_space(matrix)` | Compute the GF(2) null space of a binary matrix. |
+| `inner_product(paulis)` | Produce the full pairwise symplectic inner product matrix. |
+| `radical(paulis, reduced=False)` | Find the center (radical) of a stabiliser group. |
+| `centralizer(paulis, reduced=False)` | Compute all operators commuting with a given set. |
+| `differences(paulis, paulis2=None)` | Compare generators or compute relative differences between two sets. |
+
+#### Utilities (`paulitools.util`)
+
+| Function | Purpose |
+| --- | --- |
+| `toBinary(pauli)` | Convert legacy ZX integers into `(Z|X)` binary matrices. |
+| `convert_array_type(arr, dtype)` | Cast arrays to Numba-friendly dtypes. |
+| `popcount`, `getParity(pauli, basis)` | Bit-counting helpers for interpreting operators. |
+| `get_pauli_obs`, `get_pauli_pauli_obs`, `Pauli_expectation` | Expectation value utilities for simulation data. |
+| `getCentralizer(counts, return_generators=False)` | Stitch measurement data into stabiliser descriptions. |
+
+#### Large Operator Helpers (`paulitools.large_pauli`)
+
+| Class / Function | Purpose |
+| --- | --- |
+| `PauliInt`, `PauliIntCollection` | Structured storage for arbitrarily large Pauli operators. Compatible with Numba. |
+| `create_pauli_struct`, `pauli_struct_set_bits`, `pauli_struct_get_bits` | Low-level struct helpers for Numba-compiled kernels. |
+| `symplectic_inner_product_struct`, `commutes_struct` | Symplectic operations on struct tuples. |
+| `commutation_matrix(collection)` | Generate a full commutation matrix for `PauliIntCollection`. |
+| `toZX_large` | Parse strings, tuples, or binary rows into `PauliIntCollection`. |
+
+All of these are re-exported at the package level, so the following works:
+
+```python
+from paulitools import PauliIntCollection, commutation_matrix
+```
 
 ## 🔧 Technical Features
 
@@ -97,6 +117,23 @@ This allows direct importing: `from paulitools import toZX, commutes, radical, g
 - **Bitwise Operations**: Efficient manipulation using integer bit operations
 - **Vectorized Operations**: Matrix-based commutation analysis for large operator sets
 - **Memory Efficiency**: Compact integer representation of Pauli operators
+
+### Fast Conversion Paths
+- **Binary Arrays by Default**: NumPy inputs are treated as `(Z|X)` binary bitplanes; values must be 0/1. A `-1/+1` array is automatically interpreted as eigen-Z data (`-1 → 1`, `+1 → 0`).
+- **`fast_input_type` Shortcut**: Skip validation when the encoding is known. Use `fast_input_type="binary_string"` for pure Z|X strings or `fast_input_type="eigen_z"` for ±1 eigenvalue tables.
+- **Numba-backed Packing**: Internal bit packing is compiled with Numba for low overhead bulk ingestion.
+
+```python
+from paulitools import toZX
+
+# Stream large eigenvalue tables straight into ZX form
+measurements = [-1, 1, -1, 1]
+zx = toZX(measurements, fast_input_type="eigen_z")
+
+# Pre-formatted binary strings can bypass validation too
+binary_batches = ["0011", "1100"]
+zx_fast = toZX(binary_batches, fast_input_type="binary_string")
+```
 
 ### Data Formats
 - **ZX Representation**: Pauli operators stored as integers with separate X and Z bit fields
@@ -111,25 +148,30 @@ This allows direct importing: `from paulitools import toZX, commutes, radical, g
 ## 🚀 Usage Examples
 
 ```python
-from paulitools import toZX, toString, commutes, radical
+from paulitools import (
+  toZX, toString,
+  commutes, commutation_matrix,
+  toZX_extended, symplectic_inner_product_extended,
+  PauliIntCollection,
+)
 
-# Convert Pauli strings to efficient representation
-paulis = toZX(['XX', 'YY', 'ZZ'])  # All commuting operators
-print(f"Encoded as: {paulis}")
+# Legacy representation (≤31 qubits)
+paulis = toZX(['XX', 'YY', 'ZZ'])
+print("Encoded as:", paulis)
 
-# Check commutation
+# Symplectic checks
 p1 = toZX('XX')
 p2 = toZX('ZI')
-print(f"XX and ZI commute: {bool(commutes(p1, p2))}")
+print("XX and ZI commute:", bool(commutes(p1, p2)))
 
-# Analyze group structure
-group_generators = toZX(['XX', 'ZZ', 'XI'])
-center = radical(group_generators)
-print(f"Group center: {toString(center)}")
+# Large operators (supports arbitrary qubits)
+large = toZX_extended('X' * 70)
+print("Large operator type:", type(large))
+print("Symplectic overlap:", symplectic_inner_product_extended(large, large))
 
-# Convert back to string representation
-result = toString(paulis)
-print(f"Decoded: {result}")
+# Commutation matrix for a PauliIntCollection
+collection = PauliIntCollection(3, toZX_extended(['XXI', 'YYI', 'ZZI'], force_large=True).paulis)
+print(commutation_matrix(collection))
 ```
 
 ## 🧪 Dependencies
@@ -154,3 +196,4 @@ print(f"Decoded: {result}")
 - **Research**: Group theory analysis of quantum systems
 
 This library provides a comprehensive toolkit for working with Pauli operators in quantum computing applications, with emphasis on computational efficiency and mathematical rigor.
+ 

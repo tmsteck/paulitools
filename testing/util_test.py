@@ -8,13 +8,23 @@ from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from core import toZX, toString, concatenate_ZX, right_pad, left_pad, symplectic_inner_product, commutes, GLOBAL_INTEGER
-from group import row_reduce, inner_product, null_space, radical
+from core import (
+    toZX,
+    toString,
+    right_pad,
+    left_pad,
+    symplectic_inner_product,
+    commutes,
+    GLOBAL_INTEGER,
+    toZX_extended,
+    to_standard_if_possible,
+)
+from group import row_reduce, inner_product, null_space, radical, differences
 from ptgalois.converter import toZX as toZX_pt
 from ptgalois.group import inner_product as inner_product_pt
 from ptgalois.group import radical as radical_pt
 from galois import GF2
-from util import toBinary, getParity
+from util import toBinary, getParity,filtered_purity, filtered_purity_reference
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
 import ptgalois as pt
@@ -75,6 +85,77 @@ class TestGetParity(unittest.TestCase):
         self.assertEqual(getParity(mixed, basis='X'), 1, "Should count one X operator")
         self.assertEqual(getParity(mixed, basis='Y'), 1, "Should count one Y operator")
         self.assertEqual(getParity(mixed, basis='Z'), 1, "Should count one Z operator")
+class TestUtilFunctionsWithExtension(unittest.TestCase):
+    def setUp(self):
+        self.pauli_strings = ["XYZI", "ZZXX"]
+        self.legacy = toZX(self.pauli_strings)
+        self.large_collection = toZX_extended(self.pauli_strings, force_large=True)
+        self.large_standard = to_standard_if_possible(self.large_collection)
+
+    def test_toBinary_matches_legacy(self):
+        binary_legacy = toBinary(self.legacy)
+        binary_large = toBinary(self.large_standard)
+        np.testing.assert_array_equal(binary_large, binary_legacy)
+
+    def test_getParity_matches_legacy(self):
+        k = int(self.legacy[0])
+        for idx in range(1, len(self.legacy)):
+            pauli_legacy = np.array([k, self.legacy[idx]], dtype=self.legacy.dtype)
+            pauli_large = np.array([k, self.large_standard[idx]], dtype=self.large_standard.dtype)
+            for basis in ("X", "Y", "Z"):
+                parity_legacy = getParity(pauli_legacy, basis=basis)
+                parity_large = getParity(pauli_large, basis=basis)
+                self.assertEqual(parity_large, parity_legacy)
+
+class TestStabilizerPurity(unittest.TestCase):
+    def setUp(self):
+        #load in the pickled array qiskit_test_data.pkl from the same folder:
+        import pickle
+        with open(os.path.join(os.path.dirname(__file__), 'qiskit_test_data.pkl'), 'rb') as f:
+            self.test_data = pickle.load(f)
+        self.differences = differences(self.test_data)
+        self.actual_center = toZX(['XIII', 'IIIX'])
+        #now load: qiskit_test_data_noisy.pkl
+        with open(os.path.join(os.path.dirname(__file__), 'qiskit_test_data_noisy.pkl'), 'rb') as f:
+            self.noisy_data = pickle.load(f)
+        self.noisy_differences = differences(self.noisy_data)
+        
+        
+    def test_centralizer(self):
+        # Check that the centralizer of the differences is the original stabilizer group
+        from group import centralizer
+        computed_centralizer = toZX(centralizer(self.differences))
+        # Convert both to sets of strings for easier comparison
+        print(computed_centralizer)
+        self.computed_center = computed_centralizer
+        computed_center_string = toString(computed_centralizer)
+        original_center_string = toString(self.actual_center)
+        print("Computed Centralizer:", computed_center_string)
+        print("Original Stabilizer Group:", original_center_string)
+        self.assertEqual(set(computed_center_string), set(original_center_string), "Centralizer does not match original stabilizer group")
+        #self.assertEqual(original_set, centralizer_set, "Centralizer does not match original stabilizer group")
+        
+    def test_stabilizer_purity(self):
+        purity = filtered_purity(self.actual_center, self.test_data)
+        self.assertGreaterEqual(purity, 0, "Purity should be non-negative")
+        #The purity should be strictly 1 for noise free data
+        self.assertAlmostEqual(purity, 1.0, "Purity should be 1 for a pure stabilizer state")
+    
+    #def test_purity_noisy(self):
+    #    stabilizer_purity_noisy = filtered_purity(self.actual_center, self.noisy_data)
+    #    print(stabilizer_purity_noisy)
+    #    normal_purity = getParity(self.noisy_data)
+    #    print(normal_purity)
+    #    self.assertGreaterEqual(stabilizer_purity_noisy, 0, "Purity should be non-negative")
+    #    self.assertLess(stabilizer_purity_noisy, 1.0, "Purity should be less than 1 for noisy data")
+       
+    # def test_rought_purity(self):
+    #     # Compare filtered_purity to a reference implementation
+    #     reference_purity = filtered_purity_reference(self.actual_center, self.test_data)
+    #     test_purity = filtered_purity(self.actual_center, self.test_data)
+    #     self.assertAlmostEqual(test_purity, reference_purity, places=6, msg="Filtered purity does not match reference implementation")
+        
+        
 
 
 if __name__ == '__main__':

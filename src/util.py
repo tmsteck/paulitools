@@ -257,8 +257,8 @@ def Pauli_expectation(shots, pauli):
     Y_check = toZX(['Y'*k])
     
     def get_sign(shot, pauli):
-        yParity = symplectic_inner_product(pauli, Y_check)
-        comm_value = symplectic_inner_product(shot, pauli)
+        yParity = symplectic_inner_product_int(pauli, Y_check[1],k)
+        comm_value = symplectic_inner_product_int(shot, pauli, k)
         return np.power(-1, ((yParity + comm_value) % 2))
     
     expectation = 0.0
@@ -271,7 +271,7 @@ def Pauli_expectation(shots, pauli):
     return expectation
         
         
-@njit()
+#@njit()
 def filtered_purity(generators, shots, shot_parities=np.zeros(0, dtype=np.int8)):
     """
     Computes the filtered purity of some set of generators given noisy shots. 
@@ -400,8 +400,8 @@ def filtered_purity_reference(generators, shots, shot_parities=None):
             
             # Compute symplectic inner product ⟨shot, generator⟩
             inner_prod = symplectic_inner_product(
-                np.array([k, shot_val]), 
-                np.array([k, gen_val])
+                shot_val, 
+                gen_val, k
             )
             
             # Compute the exponent for this generator: π_y(g) + ⟨i,g⟩

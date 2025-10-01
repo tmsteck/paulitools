@@ -5,167 +5,292 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
+try:  # pragma: no cover - handled during package import
+    from .large_pauli import (
+        MAX_STANDARD_QUBITS,
+        PauliInt,
+        PauliIntCollection,
+        commutes_any as _commutes_any,
+        infer_qubits as _infer_qubits_large,
+        is_pauliint as _is_pauliint,
+        is_pauliint_collection as _is_pauliint_collection,
+        pauliints_to_standard,
+        standard_to_pauliints,
+        symplectic_inner_product_any as _sip_any,
+        toZX_large,
+    )
+except ImportError:  # pragma: no cover - legacy import path
+    from large_pauli import (  # type: ignore
+        MAX_STANDARD_QUBITS,
+        PauliInt,
+        PauliIntCollection,
+        commutes_any as _commutes_any,
+        infer_qubits as _infer_qubits_large,
+        is_pauliint as _is_pauliint,
+        is_pauliint_collection as _is_pauliint_collection,
+        pauliints_to_standard,
+        standard_to_pauliints,
+        symplectic_inner_product_any as _sip_any,
+        toZX_large,
+    )
+
 
 GLOBAL_INTEGER = int64
 
-def toZX(input_data):
+ASCII_I = np.uint8(ord('I'))
+ASCII_X = np.uint8(ord('X'))
+ASCII_Y = np.uint8(ord('Y'))
+ASCII_Z = np.uint8(ord('Z'))
+
+
+@njit(cache=True)
+def _pack_zx_bitplanes(z_bits, x_bits):
+    """Pack Z and X bitplanes into legacy integer representation."""
+    num_rows = z_bits.shape[0]
+    length = z_bits.shape[1]
+    output = np.empty(num_rows + 1, dtype=np.int64)
+    output[0] = length
+    for row in range(num_rows):
+        value = np.int64(0)
+        for col in range(length):
+            if z_bits[row, col] != 0:
+                value |= np.int64(1) << (col + 1)
+            if x_bits[row, col] != 0:
+                value |= np.int64(1) << (col + 1 + length)
+        output[row + 1] = value
+    return output
+
+
+@njit(cache=True)
+def _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length):
+    """Pack Pauli character matrix into ZX legacy integers."""
+    num_rows = char_matrix.shape[0]
+    output = np.empty(num_rows + 1, dtype=np.int64)
+    output[0] = max_length
+    for row in range(num_rows):
+        value = np.int64(sign_bits[row])
+        row_length = lengths[row]
+        for col in range(row_length):
+            code = char_matrix[row, col]
+            if code == ASCII_X:
+                value |= np.int64(1) << (col + 1 + max_length)
+            elif code == ASCII_Y:
+                value |= np.int64(1) << (col + 1)
+                value |= np.int64(1) << (col + 1 + max_length)
+            elif code == ASCII_Z:
+                value |= np.int64(1) << (col + 1)
+        output[row + 1] = value
+    return output
+
+
+def _normalize_binary_entries(array):
+    arr = np.asarray(array)
+    if arr.dtype == np.bool_:
+        return arr.astype(np.uint8)
+
+    if np.any(arr == -1):
+        if np.any((arr != -1) & (arr != 0) & (arr != 1)):
+            raise ValueError("Binary array inputs using ±1 notation must only contain -1, 0, or 1 values.")
+        return (arr < 0).astype(np.uint8)
+
+    if np.any((arr != 0) & (arr != 1)):
+        raise ValueError("Binary array inputs must contain only 0/1 or ±1 values.")
+
+    return arr.astype(np.uint8)
+
+
+def _prepare_pauli_char_matrix(strings):
+    count = len(strings)
+    if count == 0:
+        raise ValueError("Input list is empty.")
+
+    lengths = np.zeros(count, dtype=np.int32)
+    sign_bits = np.zeros(count, dtype=np.uint8)
+    sanitized = []
+    max_length = 0
+    valid_characters = {'I', 'X', 'Y', 'Z'}
+
+    for idx, item in enumerate(strings):
+        if not isinstance(item, str):
+            raise ValueError("Input list contains non-string elements.")
+        if len(item) == 0:
+            body = ""
+            sign_bits[idx] = 0
+        else:
+            sign_char = item[0]
+            start = 1 if sign_char in '+-' else 0
+            if sign_char == '-':
+                sign_bits[idx] = 1
+            body = item[start:].upper()
+        if not all(ch in valid_characters for ch in body):
+            raise ValueError("Input list contains invalid Pauli characters. Only 'I', 'X', 'Y', 'Z' are allowed.")
+        sanitized.append(body)
+        lengths[idx] = len(body)
+        if lengths[idx] > max_length:
+            max_length = lengths[idx]
+
+    char_matrix = np.full((count, max_length), ASCII_I, dtype=np.uint8)
+    for idx, body in enumerate(sanitized):
+        if lengths[idx] == 0:
+            continue
+        char_codes = np.frombuffer(body.encode('ascii'), dtype=np.uint8)
+        char_matrix[idx, :char_codes.size] = char_codes
+
+    return char_matrix, lengths, sign_bits, max_length
+
+
+def _fast_binary_string_to_zx(strings):
+    if isinstance(strings, str):
+        strings_iterable = [strings]
+    else:
+        strings_iterable = list(strings)
+        if len(strings_iterable) == 0:
+            raise ValueError("Input list is empty.")
+
+    length = len(strings_iterable[0])
+    if length % 2 != 0:
+        raise ValueError("Binary string length must be even (Z|X format).")
+
+    for item in strings_iterable:
+        if len(item) != length:
+            raise ValueError("All binary strings must share the same length.")
+        if not _is_binary_string(item):
+            raise ValueError("binary_string fast path received non-binary content.")
+
+    half = length // 2
+    total_bits = len(strings_iterable) * length
+    bits = np.fromiter(
+        (1 if ch == '1' else 0 for s in strings_iterable for ch in s),
+        dtype=np.uint8,
+        count=total_bits,
+    ).reshape(len(strings_iterable), length)
+
+    return _pack_zx_bitplanes(bits[:, :half], bits[:, half:]).astype(GLOBAL_INTEGER)
+
+
+def _fast_eigen_z_to_zx(array):
+    arr = np.asarray(array)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    elif arr.ndim != 2:
+        raise ValueError("eigen_z input must be 1D or 2D array-like.")
+    if arr.shape[1] == 0:
+        raise ValueError("eigen_z input must have at least one column.")
+
+    z_bits = (arr < 0).astype(np.uint8)
+    x_bits = np.zeros_like(z_bits, dtype=np.uint8)
+    return _pack_zx_bitplanes(z_bits, x_bits).astype(GLOBAL_INTEGER)
+
+
+def _handle_binary_array_input(array):
+    arr = np.asarray(array)
+    if arr.ndim == 1:
+        if arr.size % 2 != 0:
+            raise ValueError(f"Binary array length {arr.size} must be even (Z|X format)")
+        normalized = _normalize_binary_entries(arr).reshape(1, -1)
+    elif arr.ndim == 2:
+        if arr.shape[1] % 2 != 0:
+            raise ValueError(f"Binary array width {arr.shape[1]} must be even (Z|X format)")
+        normalized = _normalize_binary_entries(arr)
+    else:
+        raise ValueError("NumPy array input must be 1D or 2D")
+
+    half = normalized.shape[1] // 2
+    return _pack_zx_bitplanes(normalized[:, :half], normalized[:, half:]).astype(GLOBAL_INTEGER)
+
+
+def _tozx_fast_path(input_data, fast_input_type):
+    if fast_input_type == "binary_string":
+        return _fast_binary_string_to_zx(input_data)
+    if fast_input_type == "eigen_z":
+        return _fast_eigen_z_to_zx(input_data)
+    raise ValueError(f"Unsupported fast_input_type '{fast_input_type}'.")
+
+
+def _is_binary_string(value):
+    return isinstance(value, str) and all(ch in {'0', '1'} for ch in value)
+
+def toZX(input_data, fast_input_type=None):
     """
     Convert different forms of Pauli string representations to an efficient integer representation.
-    
+
     Args:
         input_data (str, list, tuple, list of str, np.ndarray): Input representation of Pauli string.
             - Pauli string (e.g., "XYZI")
-            - List of tuples with Pauli characters and their indices (e.g., [('X',0), ('Y',1), ('Z',2)])
+            - List of tuples with Pauli characters and their indices (e.g., [('X',0), ('Y',1)])
             - List of Pauli strings (e.g., ['XX', 'YY', '-YY'])
             - Binary string representation (e.g., "11000110" = IXYZ, format: Z|X bits)
             - NumPy array of binary arrays in ZX form (e.g., np.array([[1,1,0,0], [0,1,1,0]]))
             - Single binary array in ZX form (e.g., np.array([1,1,0,0]))
-    
-    Returns:
-        tuple: (int, np.ndarray): Length of Pauli strings and their integer representations as a numpy array.
-    """
-    if not isinstance(input_data, (str, list, tuple, np.ndarray)):
-        raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, list of Pauli strings, or numpy array.")
-    
-    # Handle NumPy array inputs (binary arrays in ZX form)
-    if isinstance(input_data, np.ndarray):
-        # Convert NumPy arrays to binary strings and use existing logic
-        if input_data.ndim == 1:
-            # Single binary array - convert to binary string
-            if len(input_data) % 2 != 0:
-                raise ValueError(f"Binary array length {len(input_data)} must be even (Z|X format)")
-            binary_string = ''.join(str(int(bit)) for bit in input_data)
-            return toZX(binary_string)  # Recursive call with binary string
-            
-        elif input_data.ndim == 2:
-            # Multiple binary arrays - convert each row to binary string
-            if input_data.shape[1] % 2 != 0:
-                raise ValueError(f"Binary array width {input_data.shape[1]} must be even (Z|X format)")
-            binary_strings = [''.join(str(int(bit)) for bit in row) for row in input_data]
-            return toZX(binary_strings)  # Recursive call with list of binary strings
-        else:
-            raise ValueError("NumPy array input must be 1D or 2D")
-    
-    valid_characters = {'X', 'Y', 'Z', 'I', '+', '-'}
-    binary_characters = {'0', '1'}
-    
-    # Check if input is a binary string (format 6)
-    is_binary_string = False
-    if isinstance(input_data, str):
-        if all(char in binary_characters for char in input_data):
-            is_binary_string = True
-        elif not all(char in valid_characters for char in input_data):
-            raise ValueError("Input string contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed.")
-    elif isinstance(input_data, (list, tuple)):
-        for item in input_data:
-            if isinstance(item, str):
-                if all(char in binary_characters for char in item):
-                    # This is a binary string in a list
-                    continue
-                elif not all(char in valid_characters for char in item):
-                    raise ValueError("Input list/tuple contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed.")
-            elif isinstance(item, tuple):
-                for sub_item in item:
-                    if isinstance(sub_item, str):
-                        if not all(char in valid_characters for char in sub_item):
-                            raise ValueError("Input list of tuples contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', and '-' are allowed.")
-                    elif not isinstance(sub_item, int):
-                        raise ValueError("Unsupported input data type in tuple. Must be a Pauli string or integer.")
-            else:
-                raise ValueError("Unsupported input data type in list/tuple. Must be a Pauli string or tuple.")
+        fast_input_type (str, optional): Bypass validation and assume a specific input encoding.
+            Supported values:
+            - ``"binary_string"``: `input_data` is a binary string or list thereof in Z|X format.
+            - ``"eigen_z"``: `input_data` is a ±1 array where -1 -> 1 (Z bit set) and +1 -> 0.
 
-    def pauli_to_integer(pauli_str, length):
-        sign_bit = 0
-        if pauli_str.startswith('-'):
-            sign_bit = 1
-            pauli_str = pauli_str[1:]
-        integer_rep = sign_bit
-        for i, pauli in enumerate(pauli_str):
-            i = i + 1  # Shift for sign
-            if pauli not in ['X', 'Y', 'Z', 'I']:
-                raise ValueError(f"Invalid Pauli character: {pauli}. Must be one of 'X', 'Y', 'Z', 'I'.")
-            if pauli == 'X':
-                integer_rep |= (1 << (length + i))
-            elif pauli == 'Y':
-                integer_rep |= (1 << (length + i))
-                integer_rep |= (1 << i)
-            elif pauli == 'Z':
-                integer_rep |= (1 << i)
-            # 'I' means identity, no action needed
-        return integer_rep
-    
-    def binary_string_to_integer(binary_str, length):
-        """Convert binary string format (Z|X bits) to integer representation."""
-        if len(binary_str) != 2 * length:
-            raise ValueError(f"Binary string length {len(binary_str)} does not match expected length {2 * length} for {length} qubits.")
-        
-        integer_rep = 0  # No sign bit for binary format
-        
-        # First half is Z bits, second half is X bits
-        z_bits = binary_str[:length]
-        x_bits = binary_str[length:]
-        
-        # Set Z bits (positions 1 to length)
-        for i, z_bit in enumerate(z_bits):
-            if z_bit == '1':
-                integer_rep |= (1 << (i + 1))
-        
-        # Set X bits (positions length+1 to 2*length)
-        for i, x_bit in enumerate(x_bits):
-            if x_bit == '1':
-                integer_rep |= (1 << (i + 1 + length))
-        
-        return integer_rep
-    
+    Returns:
+        np.ndarray: ZX legacy representation (first element = number of qubits).
+    """
+
+    if fast_input_type is not None:
+        return _tozx_fast_path(input_data, fast_input_type)
+
+    if not isinstance(input_data, (str, list, tuple, np.ndarray)):
+        raise ValueError(
+            "Unsupported input data type. Must be a Pauli string, list of tuples, list of Pauli strings, or numpy array."
+        )
+
+    if isinstance(input_data, np.ndarray):
+        return _handle_binary_array_input(input_data)
+
+    if isinstance(input_data, str):
+        if _is_binary_string(input_data):
+            return _fast_binary_string_to_zx(input_data)
+        char_matrix, lengths, sign_bits, max_length = _prepare_pauli_char_matrix([input_data])
+        return _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length).astype(GLOBAL_INTEGER)
+
+    if isinstance(input_data, tuple):
+        input_data = list(input_data)
+
     if isinstance(input_data, list):
+        if len(input_data) == 0:
+            raise ValueError("Input list is empty.")
+
         if all(isinstance(item, str) for item in input_data):
-            # Check if all items are binary strings
-            all_binary = all(all(char in binary_characters for char in item) for item in input_data)
-            
-            if all_binary:
-                # Handle list of binary strings
-                length = len(input_data[0]) // 2  # Binary strings are 2*qubits long
-                pauli_integers = np.empty(len(input_data) + 1, dtype=GLOBAL_INTEGER)
-                pauli_integers[0] = length
-                for i, binary_str in enumerate(input_data):
-                    pauli_integers[i + 1] = binary_string_to_integer(binary_str, length)
-                return pauli_integers
-            else:
-                # Handle list of Pauli strings
-                length = np.max(np.array([len(pauli) for pauli in input_data]))
-                pauli_integers = np.empty(len(input_data) + 1, dtype=GLOBAL_INTEGER)
-                pauli_integers[0] = length
-                for i, pauli in enumerate(input_data):
-                    pauli_integers[i + 1] = pauli_to_integer(pauli, length)
-                return pauli_integers
-        elif all(isinstance(item, tuple) for item in input_data):
-            num_qubits = np.max(np.array([index for _, index in input_data])) + 1
-            pauli_str = ['I'] * num_qubits
+            binary_flags = [_is_binary_string(item) for item in input_data]
+            if all(binary_flags):
+                return _fast_binary_string_to_zx(input_data)
+            if any(binary_flags):
+                raise ValueError(
+                    "Input list/tuple contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed."
+                )
+            char_matrix, lengths, sign_bits, max_length = _prepare_pauli_char_matrix(input_data)
+            return _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length).astype(GLOBAL_INTEGER)
+
+        if all(isinstance(item, tuple) for item in input_data):
+            if len(input_data) == 0:
+                raise ValueError("Input list of tuples is empty.")
+            max_index = -1
+            pauli_map = {}
             for pauli, index in input_data:
-                if pauli not in ['X', 'Y', 'Z', 'I']:
-                    raise ValueError(f"Invalid Pauli character: {pauli}. Must be one of 'X', 'Y', 'Z', 'I'.")
-                pauli_str[index] = pauli
-            pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
-            pauli_integers[0] = num_qubits
-            pauli_integers[1] = pauli_to_integer(''.join(pauli_str), num_qubits)
-            return pauli_integers
-    elif isinstance(input_data, str):
-        if is_binary_string:
-            # Handle single binary string
-            length = len(input_data) // 2
-            pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
-            pauli_integers[0] = length
-            pauli_integers[1] = binary_string_to_integer(input_data, length)
-            return pauli_integers
-        else:
-            # Handle single Pauli string
-            length = len(input_data)
-            pauli_integers = np.empty(2, dtype=GLOBAL_INTEGER)
-            pauli_integers[0] = length
-            pauli_integers[1] = pauli_to_integer(input_data, length)
-            return pauli_integers
-    else:
-        raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, or list of Pauli strings.")
+                if not isinstance(pauli, str):
+                    raise ValueError("Pauli entries in tuples must be strings.")
+                upper = pauli.upper()
+                if upper not in {'X', 'Y', 'Z', 'I'}:
+                    raise ValueError("Invalid Pauli character in tuple. Only 'X', 'Y', 'Z', 'I' are allowed.")
+                if not isinstance(index, int) or index < 0:
+                    raise ValueError("Pauli tuple indices must be non-negative integers.")
+                pauli_map[index] = upper
+                if index > max_index:
+                    max_index = index
+            num_qubits = max_index + 1
+            pauli_str = ['I'] * num_qubits
+            for idx, value in pauli_map.items():
+                pauli_str[idx] = value
+            return toZX(''.join(pauli_str))
+
+        raise ValueError("Unsupported input data type in list/tuple. Must be Pauli strings or tuples.")
+
+    raise ValueError("Unsupported input data type. Must be a Pauli string, list of tuples, or list of Pauli strings.")
 
 def toString(integer_rep):
     """
@@ -305,6 +430,9 @@ def append(sym_forms):
     return output
 
 
+concatenate_ZX = append
+
+
 def left_pad(sym_form, result_size):
     """Left pads the symplectic form to cover more qubit indices. Keeps the indexing of the original form, and adds I's at the smaller indices
     
@@ -365,8 +493,8 @@ def symplectic_inner_product_int(int_rep1, int_rep2, length):
     return product
 
 
-@njit()
-def symplectic_inner_product(sym_form1, sym_form2, k=None):
+@njit(cache=True)
+def symplectic_inner_product(sym_form1, sym_form2, k):
     """
     Compute the symplectic inner product between two symplectic forms. Wrapper for symplectic_inner_product_int, cleans up the symplectic form structure and length comparisons
 
@@ -400,22 +528,28 @@ def symplectic_inner_product(sym_form1, sym_form2, k=None):
     
     return symplectic_inner_product_int(int_rep1, int_rep2, length1)
 
-@njit()
-def commutes(a, b, length=None):
+@njit(cache=True)
+def _commutes_zx_nb(sym_form1, sym_form2):
+    return np.int8(symplectic_inner_product(sym_form1, sym_form2, None) == 0)
+
+@njit(cache=True)
+def _commutes_int_nb(int_sym_form1, int_sym_form2, length):
+    return np.int8(symplectic_inner_product_int(int_sym_form1, int_sym_form2, length) == 0)
+
+
+def commutes(sym_form1, sym_form2, length=None):
     """
-    Check if two symplectic forms commute.
-    
-    Args:
-        a (np.ndarray): First symplectic form as a NumPy array with the first element as the length.
-        b (np.ndarray): Second symplectic form as a NumPy array with the first element as the length.
-        length (int, optional): If provided, `a` and `b` are treated as integer representations.
-    
-    Returns:
-        int: 1 if the two symplectic forms commute, 0 otherwise.
+    Determine whether two Pauli operators commute.
     """
-    if length is not None:
-        return np.int8(symplectic_inner_product_int(a, b, length) == 0)
-    return np.int8(symplectic_inner_product(a, b) == 0)
+    if length is None:
+        return bool(_commutes_zx_nb(sym_form1, sym_form2))
+    return bool(
+        _commutes_int_nb(
+            np.int64(sym_form1),
+            np.int64(sym_form2),
+            np.int64(length),
+        )
+    )
 
 
 def bsip_array(sym_form_input):
@@ -512,3 +646,130 @@ def commute_array_fast(sym_form_input):
     commutation_matrix = 1 - inner_product_matrix
     
     return commutation_matrix.astype(GLOBAL_INTEGER)
+
+
+# ---------------------------------------------------------------------------
+# Extended representation helpers
+# ---------------------------------------------------------------------------
+
+def _should_use_large_representation(input_data, force_large: bool = False) -> bool:
+    if force_large:
+        return True
+    try:
+        n_qubits = _infer_qubits_large(input_data)
+    except Exception:
+        return False
+    return n_qubits > MAX_STANDARD_QUBITS
+
+
+def toZX_extended(input_data, force_large: bool = False):
+    """Extended variant of :func:`toZX` that supports 64+ qubit systems.
+
+    When the number of qubits exceeds :data:`MAX_STANDARD_QUBITS` (31) the legacy
+    integer representation would overflow the 64-bit container.  This function
+    falls back to :mod:`large_pauli` and returns a
+    :class:`~large_pauli.PauliIntCollection` instead.  For smaller systems the
+    original representation is preserved unless ``force_large`` is set.
+    """
+
+    use_large = _should_use_large_representation(input_data, force_large)
+    if use_large:
+        # For forced conversion on small instances we reuse the legacy
+        # conversion to preserve sign handling before upgrading to PauliInt.
+        if force_large and not _should_use_large_representation(input_data):
+            legacy = toZX(input_data)
+            return standard_to_pauliints(legacy)
+        return toZX_large(input_data)
+
+    legacy_result = toZX(input_data)
+    if int(legacy_result[0]) > MAX_STANDARD_QUBITS:
+        return standard_to_pauliints(legacy_result)
+    return legacy_result
+
+
+def toString_extended(pauli_data) -> str:
+    """Extended variant of :func:`toString` that understands large operators."""
+    if _is_pauliint(pauli_data):
+        return pauli_data.to_string()
+    if _is_pauliint_collection(pauli_data):
+        return ", ".join(pauli.to_string() for pauli in pauli_data.paulis)
+    if isinstance(pauli_data, list) and pauli_data and _is_pauliint(pauli_data[0]):
+        return ", ".join(pauli.to_string() for pauli in pauli_data)
+    return toString(pauli_data)
+
+
+def symplectic_inner_product_extended(a, b, k=None):
+    """Dispatch symplectic inner product between legacy and extended forms."""
+    if k is not None:
+        return symplectic_inner_product(a, b, k=k)
+
+    if _is_pauliint_collection(a):
+        if len(a) != 1:
+            raise ValueError("Expected a single Pauli operator in the collection")
+        a = a.paulis[0]
+    if _is_pauliint_collection(b):
+        if len(b) != 1:
+            raise ValueError("Expected a single Pauli operator in the collection")
+        b = b.paulis[0]
+
+    if _is_pauliint(a) or _is_pauliint(b):
+        return _sip_any(a, b)
+    return symplectic_inner_product(a, b)
+
+
+def commutes_extended(a, b, length=None):
+    """Extended commutation check with support for large operators."""
+    if length is not None:
+        return commutes(a, b, length=length)
+
+    if _is_pauliint_collection(a):
+        if len(a) != 1:
+            raise ValueError("Expected a single Pauli operator in the collection")
+        a = a.paulis[0]
+    if _is_pauliint_collection(b):
+        if len(b) != 1:
+            raise ValueError("Expected a single Pauli operator in the collection")
+        b = b.paulis[0]
+
+    if _is_pauliint(a) or _is_pauliint(b):
+        return np.int8(_commutes_any(a, b))
+    return commutes(a, b)
+
+
+def to_standard_if_possible(pauli_data):
+    """Convert extended representations back to the legacy form when safe."""
+    if _is_pauliint(pauli_data):
+        collection = PauliIntCollection(pauli_data.n_qubits, [pauli_data])
+        return pauliints_to_standard(collection)
+    if _is_pauliint_collection(pauli_data):
+        return pauliints_to_standard(pauli_data)
+    if isinstance(pauli_data, list) and pauli_data and _is_pauliint(pauli_data[0]):
+        collection = PauliIntCollection(pauli_data[0].n_qubits, pauli_data)
+        return pauliints_to_standard(collection)
+    return pauli_data
+
+#@njit()
+def commutator(pauli1, pauli2):
+    """ Returns the array of all valid communtators between the two sets of paulis
+    
+    Args:
+        pauli1: First Pauli operator or collection (legacy or extended).
+        pauli2: Second Pauli operator or collection (legacy or extended).
+    Returns:
+        List of Pauli operators or collections (legacy or extended) that are the commutators of the inputs.
+    """
+    n1 = pauli1[0]
+    n2 = pauli2[0]
+    if n1 != n2:
+        raise ValueError("Pauli operators must act on the same number of qubits to compute commutators.")
+    if _is_pauliint_collection(pauli1):
+        raise Exception("Commutator not implemented for extended pauli strings")
+    if _is_pauliint_collection(pauli2):
+        raise Exception("Commutator not implemented for extended pauli strings.")
+    outputs = []
+    for a in pauli1[1:]:
+        for b in pauli2[1:]:
+            if not commutes(a, b, length=n1):
+                #Compute the commutator:
+                outputs.append(a ^ b)
+    return np.concatenate((np.array([n1]), np.array(outputs)))

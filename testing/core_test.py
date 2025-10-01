@@ -151,6 +151,37 @@ class TestConvertToIntegerRepresentation(unittest.TestCase):
         output2 = toZX(pauli_list)
         self.assertEqual(output2[0], 1)  # 1 qubit each
 
+    def test_fast_binary_string_path(self):
+        inputs = ["0011", "1100"]
+        fast = toZX(inputs, fast_input_type="binary_string")
+        slow = toZX(inputs)
+        np.testing.assert_array_equal(fast, slow)
+
+    def test_eigen_z_fast_path_single(self):
+        eigen = np.array([-1, 1, -1])
+        result = toZX(eigen, fast_input_type="eigen_z")
+        expected = toZX("ZIZ")
+        np.testing.assert_array_equal(result, expected)
+
+    def test_eigen_z_fast_path_matrix(self):
+        eigen = np.array([
+            [-1, 1],
+            [1, -1],
+        ])
+        result = toZX(eigen, fast_input_type="eigen_z")
+        expected = toZX(["ZI", "IZ"])
+        np.testing.assert_array_equal(result, expected)
+
+    def test_binary_array_accepts_pm_one(self):
+        binary = np.array([-1, 1])
+        result = toZX(binary)
+        expected = toZX("Z")
+        np.testing.assert_array_equal(result, expected)
+
+    def test_fast_input_type_invalid(self):
+        with self.assertRaises(ValueError):
+            toZX("01", fast_input_type="unknown")
+
     def test_binary_string_multi_qubit_list(self):
         """Test multi-qubit binary strings in lists - matches ptgalois behavior"""
         # Test case that matches ptgalois: ['0101', '1111'] -> ['IY', 'YY']
@@ -315,21 +346,21 @@ class TestSymplecticInnerProduct(unittest.TestCase):
     def test_commuting(self):
         p1 = toZX(['XX'])
         p2 = toZX(['YY'])
-        self.assertEqual(symplectic_inner_product(p1, p2), 0)
+        self.assertEqual(symplectic_inner_product(p1, p2, None), 0)
         
     def test_non_commuting(self):
         p1 = toZX(['XX'])
         p2 = toZX(['ZI'])
-        self.assertEqual(symplectic_inner_product(p1, p2), 1)
+        self.assertEqual(symplectic_inner_product(p1, p2, None), 1)
 
     def test_different_lengths(self):
         p1 = toZX('X')
         p2 = toZX('ZZ')
         # anti-commute.
-        self.assertEqual(symplectic_inner_product(p1, p2), 1)
+        self.assertEqual(symplectic_inner_product(p1, p2,None), 1)
         p3 = toZX('Y')
         # Y = YI, ZZ. Y_1 Z_2 + Z_1 X_2 = 1*0 + 1*1 = 1. Anti-commute.
-        self.assertEqual(symplectic_inner_product(p3, p2), 1)
+        self.assertEqual(symplectic_inner_product(p3, p2,None), 1)
 
 class TestSymplecticInnerProductInt(unittest.TestCase):
     def test_commuting(self):
@@ -362,6 +393,18 @@ class TestCommutes(unittest.TestCase):
         p1 = toZX(['XX', 'YY'])
         p2 = toZX(['ZI', 'XX'])
         self.assertFalse(commutes(p1, p2))
+    
+    def test_integer_commutes_true(self):
+        p1 = toZX(['XX'])[1]
+        p2 = toZX(['YY'])[1]
+        self.assertTrue(commutes(p1, p2, 2))
+
+    def test_integer_commutes_false(self):
+        p1 = toZX(['XX'])[1]
+        p2 = toZX(['ZI'])[1]
+        self.assertFalse(commutes(p1, p2, 2))
+
+        
 
 class TestCommutationArrays(unittest.TestCase):
     def test_commute_array_correctness(self):
