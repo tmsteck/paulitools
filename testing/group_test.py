@@ -8,18 +8,56 @@ from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from core import toZX, toString, concatenate_ZX, right_pad, left_pad, symplectic_inner_product, commutes, GLOBAL_INTEGER
-from group import row_reduce, inner_product, null_space, radical, differences, row_space, centralizer
-from ptgalois.converter import toZX as toZX_pt
-from ptgalois.converter import toString as toString_pt
-from ptgalois.group import inner_product as inner_product_pt
-from ptgalois.group import radical as radical_pt
-from ptgalois.group import centralizer as centralizer_pt
-from galois import GF2
+from core import (
+    toZX,
+    toString,
+    right_pad,
+    left_pad,
+    symplectic_inner_product,
+    commutes,
+    GLOBAL_INTEGER,
+    toZX_extended,
+    to_standard_if_possible,
+)
+from group import row_reduce, inner_product, null_space, radical, differences, row_space, centralizer, group, ingroup
+try:
+    from ptgalois.converter import toZX as toZX_pt
+    from ptgalois.converter import toString as toString_pt
+    from ptgalois.group import inner_product as inner_product_pt
+    from ptgalois.group import radical as radical_pt
+    from ptgalois.group import centralizer as centralizer_pt
+    import ptgalois as pt
+
+    HAS_PTGALOIS = True
+except Exception:
+    toZX_pt = None
+    toString_pt = None
+    inner_product_pt = None
+    radical_pt = None
+    centralizer_pt = None
+    pt = None
+    HAS_PTGALOIS = False
+
+try:
+    from galois import GF2
+
+    HAS_GALOIS = True
+except Exception:
+    GF2 = None
+    HAS_GALOIS = False
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
-import ptgalois as pt
 # Unit tests using unittest framework
+
+
+def _row_tuple_set(matrix):
+    matrix = np.asarray(matrix)
+    if matrix.size == 0:
+        return set()
+    matrix = np.mod(matrix.astype(np.int64), 2)
+    if matrix.ndim == 1:
+        return {tuple(matrix.tolist())}
+    return {tuple(row.tolist()) for row in matrix}
 
 class TestToZXBinaryArrays(unittest.TestCase):
     """Test cases for binary array input support in toZX function"""
@@ -256,12 +294,65 @@ class TestRowReduce(unittest.TestCase):
         output = row_reduce(input)
         np.testing.assert_array_equal(output, expected_output)
 
+
+class TestInGroup(unittest.TestCase):
+    def test_independent_single(self):
+        basis = toZX(["XX", "ZZ"])
+        candidate = toZX(["XZ"])
+        result = ingroup(candidate, basis)
+        self.assertFalse(result[0])
+
+    def test_dependent_single(self):
+        basis = toZX(["XX", "ZI"])
+        candidate = toZX(["XX"])
+        result = ingroup(candidate, basis)
+        self.assertTrue(result[0])
+
+    def test_multiple_candidates(self):
+        basis = toZX(["XX", "ZZ"])
+        candidates = toZX(["XI", "XX", "ZX"])
+        result = ingroup(candidates, basis)
+        expected = np.array([False, True, False], dtype=np.bool_)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_reduced_basis(self):
+        basis = toZX(["XX", "XI", "IZ"])
+        reduced_basis = row_reduce(basis)
+        candidate = toZX(["ZZ"])
+        result = ingroup(candidate, reduced_basis, reduced=True)
+        self.assertFalse(result[0])
+
+    def test_k_mismatch(self):
+        basis = toZX(["X"])
+        candidates = toZX(["XX"])
+        with self.assertRaises(ValueError):
+            ingroup(candidates, basis)
+
+    def test_empty_candidates(self):
+        basis = toZX(["X"])
+        empty_candidates = np.array([basis[0]], dtype=GLOBAL_INTEGER)
+        result = ingroup(empty_candidates, basis)
+        self.assertEqual(result.shape[0], 0)
+
+    def test_identity_candidate(self):
+        basis = toZX(["XX", "ZZ"])
+        identity = toZX(["II"])
+        result = ingroup(identity, basis)
+        self.assertTrue(result[0])
+
+    def test_result_dtype(self):
+        basis = toZX(["XX", "ZZ"])
+        candidates = toZX(["XI", "ZX"])
+        result = ingroup(candidates, basis)
+        self.assertEqual(result.dtype, np.bool_)
+
 class TestInnerProduct(unittest.TestCase):
     #Test information:
     def setUp(self):
-        self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
-        self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
-        self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
+        if HAS_PTGALOIS:
+            self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
+            self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
+            self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
         
         self.set_1 = toZX(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2 = toZX(["XX", "XI", "ZI"]) #L = 1
@@ -270,17 +361,23 @@ class TestInnerProduct(unittest.TestCase):
     def test_commuting(self):
         #All zeros
         expected_output = np.zeros((3,3), dtype=GLOBAL_INTEGER)
-        pt_output = inner_product_pt(self.set_1_pt, self.set_1_pt)
         output = inner_product(self.set_1)
         np.testing.assert_array_equal(output, expected_output)
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
+        pt_output = inner_product_pt(self.set_1_pt, self.set_1_pt)
         np.testing.assert_array_equal(pt_output, expected_output)
     
     def test_L1(self):
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_output = inner_product_pt(self.set_2_pt, self.set_2_pt)
         output = inner_product(self.set_2)
         np.testing.assert_array_equal(output, pt_output)
     
     def test_L2(self):
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_output = inner_product_pt(self.set_3_pt, self.set_3_pt)
         output = inner_product(self.set_3)
         np.testing.assert_array_equal(output, pt_output)
@@ -288,6 +385,8 @@ class TestInnerProduct(unittest.TestCase):
 
 class TestNullSpaceMod2(unittest.TestCase):
     def test_null_space(self):
+        if not HAS_GALOIS:
+            self.skipTest("galois is not available for external null-space comparison")
         # Generate random matrices and compare the null spaces
         np.random.seed(42)
         for _ in range(10):
@@ -310,9 +409,10 @@ class TestCentralizer(unittest.TestCase):
     """Test centralizer function against ptgalois implementation"""
     
     def setUp(self):
-        self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
-        self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
-        self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
+        if HAS_PTGALOIS:
+            self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
+            self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
+            self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
         self.set_1 = toZX(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2 = toZX(["XX", "XI", "ZI"]) #L = 1
         self.set_3 = toZX(["ZI", "XI", "IX","IZ"]) #L = 2
@@ -320,12 +420,14 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_commuting(self):
         """Test centralizer for all commuting Paulis"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_1_pt)
         our_centralizer = centralizer(self.set_1)
         
-        print(f"\nCommuting case:")
-        print(f"Ptgalois centralizer shape: {pt_centralizer.shape}")
-        print(f"Our centralizer shape: {our_centralizer.shape}")
+        #print(f"\nCommuting case:")
+        #print(f"Ptgalois centralizer shape: {pt_centralizer.shape}")
+        #print(f"Our centralizer shape: {our_centralizer.shape}")
         
         # Test that all elements in our centralizer commute with input group
         rs = row_space(self.set_1)
@@ -346,6 +448,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_L1(self):
         """Test centralizer for L=1 case"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_2_pt)
         our_centralizer = centralizer(self.set_2)
         
@@ -366,6 +470,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_L2(self):
         """Test centralizer for L=2 case"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_3_pt)
         our_centralizer = centralizer(self.set_3)
         
@@ -389,9 +495,17 @@ class TestCentralizer(unittest.TestCase):
         our_centralizer = centralizer(self.set_4)
         output = toZX(["IIZII", "IIIZI", "IIIIZ"][::-1]) #no particular reason this is reversed -- probably the same as row_reduced version
         np.testing.assert_array_equal(toZX(our_centralizer), output)
+        
+        
+    # def test_comp_basis_tests_centralizer(self):
+    #     test_center_set = toZX(['ZII', 'IZI', 'IIZ', "IIX"])
+    #     full_group = group(test_center_set)
+    #     stabilizer_generators = paulitools.group.centralizer(full_group)
 
     def test_centralizer_random_equivalence(self):
         """Compare centralizer against ptgalois for random test cases"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         n_qubits = 10  # Smaller for faster testing
         n_paulis = 15
         n_trials = 30
@@ -591,6 +705,47 @@ class TestRowSpace(unittest.TestCase):
         
         print(f"\nRow space speed test (n_trials={n_trials}, n_qubits={n_qubits}, n_paulis={n_paulis}):")
         print(f"row_space: {elapsed:.6f} s ({ops_per_sec:.2f} ops/s)")
+
+
+class TestGroupFunctionsWithExtension(unittest.TestCase):
+    def setUp(self):
+        self.pauli_strings = ["XX", "XY", "ZZ", "YZ"]
+        self.legacy = toZX(self.pauli_strings)
+        self.large_collection = toZX_extended(self.pauli_strings, force_large=True)
+        self.large_standard = to_standard_if_possible(self.large_collection)
+
+    def test_row_reduce_matches_legacy(self):
+        reduced_legacy = row_reduce(self.legacy)
+        reduced_large = row_reduce(self.large_standard)
+        np.testing.assert_array_equal(reduced_large, reduced_legacy)
+
+    def test_row_space_matches_legacy(self):
+        space_legacy = row_space(self.legacy)
+        space_large = row_space(self.large_standard)
+        self.assertEqual(_row_tuple_set(space_large), _row_tuple_set(space_legacy))
+
+    def test_radical_matches_legacy(self):
+        radical_legacy = radical(self.legacy)
+        radical_large = radical(self.large_standard)
+        self.assertEqual(_row_tuple_set(radical_large), _row_tuple_set(radical_legacy))
+
+    def test_centralizer_matches_legacy(self):
+        centralizer_legacy = centralizer(self.legacy)
+        centralizer_large = centralizer(self.large_standard)
+        self.assertEqual(
+            _row_tuple_set(centralizer_large),
+            _row_tuple_set(centralizer_legacy),
+        )
+
+    def test_inner_product_matches_legacy(self):
+        inner_legacy = inner_product(self.legacy)
+        inner_large = inner_product(self.large_standard)
+        np.testing.assert_array_equal(inner_large, inner_legacy)
+
+    def test_differences_matches_legacy(self):
+        diff_legacy = differences(self.legacy)
+        diff_large = differences(self.large_standard)
+        np.testing.assert_array_equal(diff_large, diff_legacy)
 
 if __name__ == '__main__':
     unittest.main()
