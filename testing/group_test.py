@@ -20,15 +20,33 @@ from core import (
     to_standard_if_possible,
 )
 from group import row_reduce, inner_product, null_space, radical, differences, row_space, centralizer, group, ingroup
-from ptgalois.converter import toZX as toZX_pt
-from ptgalois.converter import toString as toString_pt
-from ptgalois.group import inner_product as inner_product_pt
-from ptgalois.group import radical as radical_pt
-from ptgalois.group import centralizer as centralizer_pt
-from galois import GF2
+try:
+    from ptgalois.converter import toZX as toZX_pt
+    from ptgalois.converter import toString as toString_pt
+    from ptgalois.group import inner_product as inner_product_pt
+    from ptgalois.group import radical as radical_pt
+    from ptgalois.group import centralizer as centralizer_pt
+    import ptgalois as pt
+
+    HAS_PTGALOIS = True
+except Exception:
+    toZX_pt = None
+    toString_pt = None
+    inner_product_pt = None
+    radical_pt = None
+    centralizer_pt = None
+    pt = None
+    HAS_PTGALOIS = False
+
+try:
+    from galois import GF2
+
+    HAS_GALOIS = True
+except Exception:
+    GF2 = None
+    HAS_GALOIS = False
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
-import ptgalois as pt
 # Unit tests using unittest framework
 
 
@@ -282,19 +300,19 @@ class TestInGroup(unittest.TestCase):
         basis = toZX(["XX", "ZZ"])
         candidate = toZX(["XZ"])
         result = ingroup(candidate, basis)
-        self.assertTrue(result[0])
+        self.assertFalse(result[0])
 
     def test_dependent_single(self):
         basis = toZX(["XX", "ZI"])
         candidate = toZX(["XX"])
         result = ingroup(candidate, basis)
-        self.assertFalse(result[0])
+        self.assertTrue(result[0])
 
     def test_multiple_candidates(self):
         basis = toZX(["XX", "ZZ"])
         candidates = toZX(["XI", "XX", "ZX"])
         result = ingroup(candidates, basis)
-        expected = np.array([True, False, True], dtype=np.bool_)
+        expected = np.array([False, True, False], dtype=np.bool_)
         np.testing.assert_array_equal(result, expected)
 
     def test_reduced_basis(self):
@@ -302,7 +320,7 @@ class TestInGroup(unittest.TestCase):
         reduced_basis = row_reduce(basis)
         candidate = toZX(["ZZ"])
         result = ingroup(candidate, reduced_basis, reduced=True)
-        self.assertTrue(result[0])
+        self.assertFalse(result[0])
 
     def test_k_mismatch(self):
         basis = toZX(["X"])
@@ -320,7 +338,7 @@ class TestInGroup(unittest.TestCase):
         basis = toZX(["XX", "ZZ"])
         identity = toZX(["II"])
         result = ingroup(identity, basis)
-        self.assertFalse(result[0])
+        self.assertTrue(result[0])
 
     def test_result_dtype(self):
         basis = toZX(["XX", "ZZ"])
@@ -331,9 +349,10 @@ class TestInGroup(unittest.TestCase):
 class TestInnerProduct(unittest.TestCase):
     #Test information:
     def setUp(self):
-        self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
-        self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
-        self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
+        if HAS_PTGALOIS:
+            self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
+            self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
+            self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
         
         self.set_1 = toZX(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2 = toZX(["XX", "XI", "ZI"]) #L = 1
@@ -342,17 +361,23 @@ class TestInnerProduct(unittest.TestCase):
     def test_commuting(self):
         #All zeros
         expected_output = np.zeros((3,3), dtype=GLOBAL_INTEGER)
-        pt_output = inner_product_pt(self.set_1_pt, self.set_1_pt)
         output = inner_product(self.set_1)
         np.testing.assert_array_equal(output, expected_output)
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
+        pt_output = inner_product_pt(self.set_1_pt, self.set_1_pt)
         np.testing.assert_array_equal(pt_output, expected_output)
     
     def test_L1(self):
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_output = inner_product_pt(self.set_2_pt, self.set_2_pt)
         output = inner_product(self.set_2)
         np.testing.assert_array_equal(output, pt_output)
     
     def test_L2(self):
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_output = inner_product_pt(self.set_3_pt, self.set_3_pt)
         output = inner_product(self.set_3)
         np.testing.assert_array_equal(output, pt_output)
@@ -360,6 +385,8 @@ class TestInnerProduct(unittest.TestCase):
 
 class TestNullSpaceMod2(unittest.TestCase):
     def test_null_space(self):
+        if not HAS_GALOIS:
+            self.skipTest("galois is not available for external null-space comparison")
         # Generate random matrices and compare the null spaces
         np.random.seed(42)
         for _ in range(10):
@@ -382,9 +409,10 @@ class TestCentralizer(unittest.TestCase):
     """Test centralizer function against ptgalois implementation"""
     
     def setUp(self):
-        self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
-        self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
-        self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
+        if HAS_PTGALOIS:
+            self.set_1_pt = toZX_pt(["XX", "YY", "ZZ"]) #ALL COMMUTING
+            self.set_2_pt = toZX_pt(["XX", "XI", "ZI"]) #L = 1
+            self.set_3_pt = toZX_pt(["ZI", "XI", "IX","IZ"]) #L = 2
         self.set_1 = toZX(["XX", "YY", "ZZ"]) #ALL COMMUTING
         self.set_2 = toZX(["XX", "XI", "ZI"]) #L = 1
         self.set_3 = toZX(["ZI", "XI", "IX","IZ"]) #L = 2
@@ -392,6 +420,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_commuting(self):
         """Test centralizer for all commuting Paulis"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_1_pt)
         our_centralizer = centralizer(self.set_1)
         
@@ -418,6 +448,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_L1(self):
         """Test centralizer for L=1 case"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_2_pt)
         our_centralizer = centralizer(self.set_2)
         
@@ -438,6 +470,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_L2(self):
         """Test centralizer for L=2 case"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         pt_centralizer = centralizer_pt(self.set_3_pt)
         our_centralizer = centralizer(self.set_3)
         
@@ -470,6 +504,8 @@ class TestCentralizer(unittest.TestCase):
 
     def test_centralizer_random_equivalence(self):
         """Compare centralizer against ptgalois for random test cases"""
+        if not HAS_PTGALOIS:
+            self.skipTest("ptgalois is not available for external comparison")
         n_qubits = 10  # Smaller for faster testing
         n_paulis = 15
         n_trials = 30

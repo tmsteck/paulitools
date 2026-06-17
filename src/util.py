@@ -5,6 +5,11 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
+try:
+    from ._numba import NUMBA_CACHE
+except ImportError:  # pragma: no cover - legacy direct-module import path
+    from _numba import NUMBA_CACHE  # type: ignore
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
@@ -272,8 +277,8 @@ def Pauli_expectation(shots, pauli):
         
         
 #@njit()
-def filtered_purity(generators, shots, shot_parities=np.zeros(0, dtype=np.int8)):
-    """
+def filtered_purity_old(generators, shots, shot_parities=np.zeros(0, dtype=np.int8)):
+    r"""
     Computes the filtered purity of some set of generators given noisy shots. 
     
     $$
@@ -327,10 +332,108 @@ def filtered_purity(generators, shots, shot_parities=np.zeros(0, dtype=np.int8))
     # Compute purity contribution from valid shots
     purity_contributions = np.where(shot_parities == 0, 1, -1)
     filtered_contributions = purity_contributions * valid_shots.astype(np.int8)
-    
+
     return np.sum(filtered_contributions) / num_shots
+
+@njit(cache=NUMBA_CACHE)
+def filtered_purity(generators, shots, shot_parities=None):
+    """
+    Computes the filtered purity of some set of generators given noisy shots.
+
+    Fast JIT-compiled version that avoids Python loops and vectorization overheads.
+
+    Args:
+        generators (ndarray): ZX array of samples (ie, Pauli group element generators g∈G)
+        shots (ndarray): ZX array of the shots (ie, direct samples with the conjugate problem)
+        shot_parities (ndarray, optional): Precomputed Y parities of the shots, if available
+
+    Returns:
+        float: The computed filtered purity
+    """
+    if len(generators) <= 1 or len(shots) <= 1:
+        return 0.0
+
+    k = generators[0]
+    num_generators = len(generators) - 1
+    num_shots = len(shots) - 1
+
+    # Precompute shot parities if not provided
+    compute_shot_parities = (shot_parities is None or len(shot_parities) != num_shots)
+    if compute_shot_parities:
+        shot_parities_local = np.empty(num_shots, dtype=np.int8)
+        for i in range(num_shots):
+            shot_parities_local[i] = getParity(np.array([k, shots[i+1]], dtype=GLOBAL_INTEGER), 'Y')
+    else:
+        shot_parities_local = shot_parities
     
-    
+    # Precompute generator parities
+    gen_parities = np.empty(num_generators, dtype=np.int8)
+    for j in range(num_generators):
+        gen_parities[j] = getParity(np.array([k, generators[j+1]], dtype=GLOBAL_INTEGER), 'Y')
+
+    # Main computation loop - iterate over shots
+    total_purity = 0.0
+
+    for i in range(num_shots):
+        shot_val = shots[i+1]
+        shot_y_parity = shot_parities_local[i]
+
+        # Check if this shot is stabilized by ALL generators
+        is_stabilized = True
+
+        for j in range(num_generators):
+            gen_val = generators[j+1]
+            gen_y_parity = gen_parities[j]
+
+            # Compute symplectic inner product
+            inner_prod = symplectic_inner_product_int(shot_val, gen_val, k)
+
+            # Compute exponent: π_y(g) + ⟨i,g⟩
+            exponent = (gen_y_parity + inner_prod) & 1
+
+            # If exponent is 1, this generator gives -1, so shot is not stabilized
+            if exponent == 1:
+                is_stabilized = False
+                break  # Early exit - no need to check remaining generators
+
+        # Only contribute if stabilized by all generators
+        if is_stabilized:
+            # Contribution is (-1)^{π_y(shot)}
+            if shot_y_parity == 0:
+                total_purity += 1.0
+            else:
+                total_purity -= 1.0
+
+    return total_purity / num_shots
+
+def get_purity(shots):
+    """
+    Computes the purity of a set of shots.
+
+    Args:
+        shots (ndarray): ZX array of shots
+
+    Returns:
+        float: The computed purity
+    """
+    if len(shots) <= 1:
+        raise Exception("Input is trivial. either the input is missing the qubit information at index zero, or it is an empty set being passed")
+
+    k = shots[0]
+    num_shots = len(shots) - 1
+
+    total_purity = 0.0
+
+    for i in range(num_shots):
+        shot_val = shots[i+1]
+        shot_y_parity = getParity(np.array([k, shot_val]), 'Y')
+
+        # Contribution is (-1)^{π_y(shot)}
+        shot_sign = 1 if shot_y_parity == 0 else -1
+        total_purity += shot_sign
+
+    return total_purity / num_shots
+
 def filtered_purity_reference(generators, shots, shot_parities=None):
     """
     Reference implementation of filtered purity - slow but easy to verify.

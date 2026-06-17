@@ -12,4 +12,29 @@ conda install qiskit==0.41.0
 
 pip install galois
 pip install tensornetwork
-pip install ./ -e
+pip install -e . 
+
+
+$2700 for replacement + sensor
+
+$1000 replacement + cleaning
+780 
+240
+
+$200 for fluid
+
+$400 for flush
+
+seat -- track problem
+
+$430 replace the seat track would get back sometime next week
+
+
+1600 minimum -- possibly + 1700 if cat is bad...
+
+Kemal Aziz, Haining Pan, Michael J. Gullans, J. H. Pixley
+
+
+
+
+

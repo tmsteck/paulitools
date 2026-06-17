@@ -20,14 +20,9 @@ from core import (
     to_standard_if_possible,
 )
 from group import row_reduce, inner_product, null_space, radical, differences
-from ptgalois.converter import toZX as toZX_pt
-from ptgalois.group import inner_product as inner_product_pt
-from ptgalois.group import radical as radical_pt
-from galois import GF2
 from util import toBinary, getParity,filtered_purity, filtered_purity_reference
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
-import ptgalois as pt
 # Unit tests usin
 
 class TestToBinary(unittest.TestCase):

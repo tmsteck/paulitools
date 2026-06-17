@@ -5,6 +5,11 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
+try:
+    from ._numba import NUMBA_CACHE
+except ImportError:  # pragma: no cover - legacy direct-module import path
+    from _numba import NUMBA_CACHE  # type: ignore
+
 try:  # pragma: no cover - handled during package import
     from .large_pauli import (
         MAX_STANDARD_QUBITS,
@@ -43,7 +48,7 @@ ASCII_Y = np.uint8(ord('Y'))
 ASCII_Z = np.uint8(ord('Z'))
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _pack_zx_bitplanes(z_bits, x_bits):
     """Pack Z and X bitplanes into legacy integer representation."""
     num_rows = z_bits.shape[0]
@@ -61,7 +66,7 @@ def _pack_zx_bitplanes(z_bits, x_bits):
     return output
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length):
     """Pack Pauli character matrix into ZX legacy integers."""
     num_rows = char_matrix.shape[0]
@@ -493,7 +498,7 @@ def symplectic_inner_product_int(int_rep1, int_rep2, length):
     return product
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def symplectic_inner_product(sym_form1, sym_form2, k):
     """
     Compute the symplectic inner product between two symplectic forms. Wrapper for symplectic_inner_product_int, cleans up the symplectic form structure and length comparisons
@@ -528,11 +533,11 @@ def symplectic_inner_product(sym_form1, sym_form2, k):
     
     return symplectic_inner_product_int(int_rep1, int_rep2, length1)
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _commutes_zx_nb(sym_form1, sym_form2):
     return np.int8(symplectic_inner_product(sym_form1, sym_form2, None) == 0)
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _commutes_int_nb(int_sym_form1, int_sym_form2, length):
     return np.int8(symplectic_inner_product_int(int_sym_form1, int_sym_form2, length) == 0)
 

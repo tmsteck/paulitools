@@ -118,6 +118,23 @@ from paulitools import PauliIntCollection, commutation_matrix
 - **Vectorized Operations**: Matrix-based commutation analysis for large operator sets
 - **Memory Efficiency**: Compact integer representation of Pauli operators
 
+### Numba Cache Policy
+
+The package defaults to non-cached Numba compilation in editable/development
+installs so modern Python/Numba environments can import reliably even when the
+source tree is mapped through `package_dir={"paulitools": "src"}`. Set
+`PAULITOOLS_NUMBA_CACHE=1` to opt back into Numba disk caching in environments
+where Numba can locate a stable cache path.
+
+### Current Package Status
+
+In the `robels-modern` environment, the editable package imports on Python 3.14
+with Numba 0.65, and the large-Pauli smoke path passes via
+`toZX_extended("X" * 64)` plus `row_reduce(...)`. The full local `testing/`
+suite passes with `galois`/`ptgalois` optional comparisons skipped when those
+packages are unavailable. The Numba reflected-list warning in `core.append`
+remains a known follow-up rather than a release blocker.
+
 ### Fast Conversion Paths
 - **Binary Arrays by Default**: NumPy inputs are treated as `(Z|X)` binary bitplanes; values must be 0/1. A `-1/+1` array is automatically interpreted as eigen-Z data (`-1 → 1`, `+1 → 0`).
 - **`fast_input_type` Shortcut**: Skip validation when the encoding is known. Use `fast_input_type="binary_string"` for pure Z|X strings or `fast_input_type="eigen_z"` for ±1 eigenvalue tables.
@@ -196,4 +213,3 @@ print(commutation_matrix(collection))
 - **Research**: Group theory analysis of quantum systems
 
 This library provides a comprehensive toolkit for working with Pauli operators in quantum computing applications, with emphasis on computational efficiency and mathematical rigor.
- 

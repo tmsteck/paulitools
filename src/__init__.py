@@ -10,14 +10,14 @@ from .core import (
 
 # Import group theory functions
 from .group import (
-    row_reduce, null_space, inner_product, radical, centralizer, differences
+    row_reduce, null_space, inner_product, radical, centralizer, differences, ingroup
 )
 
 # Import utility functions
 from .util import (
     toBinary, convert_array_type, popcount, getParity,
     get_pauli_obs, get_pauli_pauli_obs, getCentralizer,
-    Pauli_expectation, filtered_purity
+    Pauli_expectation, filtered_purity, get_purity
 )
 
 from .large_pauli import (
@@ -57,12 +57,12 @@ __all__ = [
     'to_standard_if_possible',
     
     # Group functions
-    'row_reduce', 'null_space', 'inner_product', 'radical', 'centralizer', 'differences',
+    'row_reduce', 'null_space', 'inner_product', 'radical', 'centralizer', 'differences', 'ingroup',
     
     # Utility functions
     'toBinary', 'convert_array_type', 'popcount', 'getParity',
     'get_pauli_obs', 'get_pauli_pauli_obs', 'getCentralizer',
-    'Pauli_expectation', 'filtered_purity',
+    'Pauli_expectation', 'filtered_purity', 'get_purity',
 
     # Large Pauli helpers
     'MAX_STANDARD_QUBITS', 'PauliInt', 'PauliIntCollection',

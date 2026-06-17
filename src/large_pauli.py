@@ -6,6 +6,11 @@ from typing import Iterable, List, Sequence, Tuple, Union
 import numpy as np
 from numba import njit
 
+try:
+    from ._numba import NUMBA_CACHE
+except ImportError:  # pragma: no cover - legacy direct-module import path
+    from _numba import NUMBA_CACHE  # type: ignore
+
 # Number of bits stored per chunk. We use unsigned 64-bit chunks to avoid
 # sign-extension issues when performing bit manipulation.
 _CHUNK_BITS = 64
@@ -29,14 +34,14 @@ def _required_chunks(n_qubits: int) -> int:
 # ----------------------------------------------------------------------
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _required_chunks_nb(n_qubits: int) -> int:
     if n_qubits <= 0:
         raise ValueError("Number of qubits must be positive")
     return (n_qubits + _CHUNK_BITS - 1) // _CHUNK_BITS
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def create_pauli_struct(n_qubits: int, sign: int = 0):
     chunk_count = _required_chunks_nb(n_qubits)
     z_chunks = np.zeros(chunk_count, dtype=np.uint64)
@@ -44,7 +49,7 @@ def create_pauli_struct(n_qubits: int, sign: int = 0):
     return n_qubits, np.uint8(sign & 1), z_chunks, x_chunks
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def pauli_struct_set_bits(pauli_struct, qubit_idx: int, x_bit: int, z_bit: int):
     n_qubits, sign, z_chunks, x_chunks = pauli_struct
     if qubit_idx < 0 or qubit_idx >= n_qubits:
@@ -62,7 +67,7 @@ def pauli_struct_set_bits(pauli_struct, qubit_idx: int, x_bit: int, z_bit: int):
         z_chunks[chunk_idx] &= ~mask
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def pauli_struct_get_bits(pauli_struct, qubit_idx: int):
     n_qubits, sign, z_chunks, x_chunks = pauli_struct
     if qubit_idx < 0 or qubit_idx >= n_qubits:
@@ -75,7 +80,7 @@ def pauli_struct_get_bits(pauli_struct, qubit_idx: int):
     return x_bit, z_bit
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def _popcount_uint64(value: np.uint64) -> int:
     count = 0
     while value != 0:
@@ -84,7 +89,7 @@ def _popcount_uint64(value: np.uint64) -> int:
     return count
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def symplectic_inner_product_struct(pauli_a, pauli_b) -> int:
     n_qubits_a, _, z_chunks_a, x_chunks_a = pauli_a
     n_qubits_b, _, z_chunks_b, x_chunks_b = pauli_b
@@ -97,12 +102,12 @@ def symplectic_inner_product_struct(pauli_a, pauli_b) -> int:
     return parity
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def commutes_struct(pauli_a, pauli_b) -> np.int8:
     return np.int8(symplectic_inner_product_struct(pauli_a, pauli_b) == 0)
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def pauli_struct_to_binary(pauli_struct):
     n_qubits, _, z_chunks, x_chunks = pauli_struct
     binary = np.zeros(2 * n_qubits, dtype=np.uint8)
@@ -115,7 +120,7 @@ def pauli_struct_to_binary(pauli_struct):
     return binary
 
 
-@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def pauli_struct_copy(pauli_struct):
     n_qubits, sign, z_chunks, x_chunks = pauli_struct
     z_copy = z_chunks.copy()
