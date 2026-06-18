@@ -203,7 +203,7 @@ def radical(paulis, reduced=False):
     return null_space(inner_product(reduced_pauli))
 
 
-#@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def differences(paulis, paulis2 = None):
     """
     Computes the bell difference between samples. Returns paulis[i] AND paulis [i+1] cyclically
@@ -237,6 +237,7 @@ def differences(paulis, paulis2 = None):
         return diffs
 
 
+@njit(cache=NUMBA_CACHE)
 def matmul_mod2(A, B_cols):
     A_uint = np.asarray(A, dtype=np.uint8)
     B_arr = np.asarray(B_cols, dtype=np.uint8)
@@ -265,6 +266,7 @@ def matmul_mod2(A, B_cols):
 
     return out
 
+@njit(cache=NUMBA_CACHE)
 def centralizer(pauli_input, reduced=False):
     """Returns the centralizer of the input Pauli group. First computes the radical, then takes the kernel of the reduced Pauli input basis ker(P)@P.
     
@@ -319,7 +321,7 @@ def group(pauli_input):
 
 #TODO: Check inGroup function
 
-#@njit(cache=True)
+@njit(cache=NUMBA_CACHE)
 def ingroup(candidates, pauli_set, reduced=False):
     """
     Determine whether candidate Pauli operators lie in the span of a reference set.

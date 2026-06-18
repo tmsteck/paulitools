@@ -78,7 +78,7 @@ def convert_array_type(arr, dtype):
 from numba import njit
 
 # A helper function to count set bits (popcount), which is very fast in Numba.
-@njit
+@njit(cache=NUMBA_CACHE)
 def popcount(n):
     """Counts the number of set bits in an integer (Hamming weight)."""
     count = 0
@@ -88,7 +88,34 @@ def popcount(n):
         count += 1
     return count
 
-@njit
+@njit(cache=NUMBA_CACHE)
+def y_parity_int(int_rep, k):
+    """Return the Y-basis parity of a packed Pauli integer."""
+    mask = (1 << k) - 1
+    z_bits = (int_rep >> 1) & mask
+    x_bits = (int_rep >> (k + 1)) & mask
+    return popcount(x_bits & z_bits) & 1
+
+
+@njit(cache=NUMBA_CACHE)
+def x_parity_int(int_rep, k):
+    """Return the X-only parity of a packed Pauli integer."""
+    mask = (1 << k) - 1
+    z_bits = (int_rep >> 1) & mask
+    x_bits = (int_rep >> (k + 1)) & mask
+    return popcount(x_bits & (mask ^ z_bits)) & 1
+
+
+@njit(cache=NUMBA_CACHE)
+def z_parity_int(int_rep, k):
+    """Return the Z-only parity of a packed Pauli integer."""
+    mask = (1 << k) - 1
+    z_bits = (int_rep >> 1) & mask
+    x_bits = (int_rep >> (k + 1)) & mask
+    return popcount(z_bits & (mask ^ x_bits)) & 1
+
+
+@njit(cache=NUMBA_CACHE)
 def getParity(pauli, basis='Y'):
     """
     Calculates the parity of a specific Pauli operator ('X', 'Y', or 'Z')
@@ -106,25 +133,14 @@ def getParity(pauli, basis='Y'):
     k = pauli[0]
     int_rep = pauli[1]
 
-    # Isolate the k-bit representations for the Z and X parts of the operator
-    # Z part is in bits 1 to k
-    z_bits = (int_rep >> 1) & ((1 << k) - 1)
-    # X part is in bits k+1 to 2k
-    x_bits = (int_rep >> (k + 1)) & ((1 << k) - 1)
-
-    count = 0
     if basis == 'Y':
-        # A 'Y' operator exists where both X and Z bits are 1.
-        # Count the number of positions where both are set.
-        count = popcount(x_bits & z_bits)
+        return y_parity_int(int_rep, k)
     elif basis == 'X':
-        # An 'X' operator exists where the X bit is 1 and the Z bit is 0.
-        count = popcount(x_bits & (~z_bits))
+        return x_parity_int(int_rep, k)
     elif basis == 'Z':
-        # A 'Z' operator exists where the Z bit is 1 and the X bit is 0.
-        count = popcount(z_bits & (~x_bits))
-    
-    return count % 2
+        return z_parity_int(int_rep, k)
+
+    return 0
 
 def get_pauli_obs(pauli_input, probs, parallel=False):
     """
@@ -353,14 +369,14 @@ def filtered_purity(generators, shots, shot_parities=None):
     if compute_shot_parities:
         shot_parities_local = np.empty(num_shots, dtype=np.int8)
         for i in range(num_shots):
-            shot_parities_local[i] = getParity(np.array([k, shots[i+1]], dtype=GLOBAL_INTEGER), 'Y')
+            shot_parities_local[i] = y_parity_int(shots[i+1], k)
     else:
         shot_parities_local = shot_parities
     
     # Precompute generator parities
     gen_parities = np.empty(num_generators, dtype=np.int8)
     for j in range(num_generators):
-        gen_parities[j] = getParity(np.array([k, generators[j+1]], dtype=GLOBAL_INTEGER), 'Y')
+        gen_parities[j] = y_parity_int(generators[j+1], k)
 
     # Main computation loop - iterate over shots
     total_purity = 0.0
@@ -397,6 +413,7 @@ def filtered_purity(generators, shots, shot_parities=None):
 
     return total_purity / num_shots
 
+@njit(cache=NUMBA_CACHE)
 def get_purity(shots):
     """
     Computes the purity of a set of shots.
@@ -417,7 +434,7 @@ def get_purity(shots):
 
     for i in range(num_shots):
         shot_val = shots[i+1]
-        shot_y_parity = getParity(np.array([k, shot_val]), 'Y')
+        shot_y_parity = y_parity_int(shot_val, k)
 
         # Contribution is (-1)^{π_y(shot)}
         shot_sign = 1 if shot_y_parity == 0 else -1

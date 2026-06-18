@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+from numba.core.registry import CPUDispatcher
 from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
 
@@ -61,6 +62,30 @@ def _row_tuple_set(matrix):
     if matrix.ndim == 1:
         return {tuple(matrix.tolist())}
     return {tuple(row.tolist()) for row in matrix}
+
+
+class TestCompiledGroupWorkflows(unittest.TestCase):
+    def test_group_workflow_entrypoints_are_numba_dispatchers(self):
+        for func in (radical, differences, centralizer, ingroup):
+            self.assertIsInstance(func, CPUDispatcher)
+
+    def test_group_workflow_entrypoints_compile_nopython(self):
+        paulis = toZX(["XX", "YY", "ZZ"])
+        candidates = toZX(["XX", "XI"])
+        other = toZX(["XZ", "YX", "ZY"])
+
+        radical(paulis)
+        differences(paulis)
+        differences(paulis, other)
+        centralizer(paulis)
+        centralizer(row_reduce(paulis), True)
+        ingroup(candidates, paulis)
+
+        self.assertTrue(radical.nopython_signatures)
+        self.assertTrue(differences.nopython_signatures)
+        self.assertTrue(centralizer.nopython_signatures)
+        self.assertTrue(ingroup.nopython_signatures)
+
 
 class TestToZXBinaryArrays(unittest.TestCase):
     """Test cases for binary array input support in toZX function"""

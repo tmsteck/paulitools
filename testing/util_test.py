@@ -1,6 +1,7 @@
 import unittest
 import numpy as np
 import os
+from numba.core.registry import CPUDispatcher
 from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
 
@@ -11,6 +12,7 @@ from paulitools import (
     filtered_purity,
     filtered_purity_reference,
     getParity,
+    get_purity,
     inner_product,
     left_pad,
     null_space,
@@ -24,6 +26,7 @@ from paulitools import (
     to_standard_if_possible,
     toBinary,
 )
+from paulitools.util import y_parity_int
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
 # Unit tests usin
@@ -83,6 +86,29 @@ class TestGetParity(unittest.TestCase):
         self.assertEqual(getParity(mixed, basis='X'), 1, "Should count one X operator")
         self.assertEqual(getParity(mixed, basis='Y'), 1, "Should count one Y operator")
         self.assertEqual(getParity(mixed, basis='Z'), 1, "Should count one Z operator")
+
+
+class TestCompiledPurityWorkflows(unittest.TestCase):
+    def test_purity_entrypoints_are_numba_dispatchers(self):
+        for func in (filtered_purity, get_purity, y_parity_int):
+            self.assertIsInstance(func, CPUDispatcher)
+
+    def test_purity_entrypoints_compile_nopython(self):
+        generators = toZX(["XX", "ZZ"])
+        shots = toZX(["II", "XX", "YY", "ZZ"])
+        shot_parities = np.zeros(len(shots) - 1, dtype=np.int8)
+        for idx in range(len(shot_parities)):
+            shot_parities[idx] = y_parity_int(shots[idx + 1], shots[0])
+
+        self.assertAlmostEqual(filtered_purity(generators, shots), 1.0)
+        self.assertAlmostEqual(filtered_purity(generators, shots, shot_parities), 1.0)
+        self.assertAlmostEqual(get_purity(shots), 1.0)
+
+        self.assertTrue(filtered_purity.nopython_signatures)
+        self.assertTrue(get_purity.nopython_signatures)
+        self.assertTrue(y_parity_int.nopython_signatures)
+
+
 class TestUtilFunctionsWithExtension(unittest.TestCase):
     def setUp(self):
         self.pauli_strings = ["XYZI", "ZZXX"]
