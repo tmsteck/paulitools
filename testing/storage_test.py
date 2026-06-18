@@ -1,35 +1,20 @@
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-
-import importlib
-
-
-def _import_helper(base: str, fallback: str):
-    try:
-        return importlib.import_module(base)
-    except ModuleNotFoundError:  # pragma: no cover - package install
-        return importlib.import_module(fallback)
-
-
-core_module = _import_helper("core", "paulitools.core")
-large_module = _import_helper("large_pauli", "paulitools.large_pauli")
-storage_module = _import_helper("storage", "paulitools.storage")
-
-toZX = core_module.toZX
-toZX_extended = core_module.toZX_extended
-PauliIntCollection = large_module.PauliIntCollection
-SerializationError = storage_module.SerializationError
-append_pauli_data = storage_module.append_pauli_data
-iter_pauli_records = storage_module.iter_pauli_records
-load_pauli_data = storage_module.load_pauli_data
-save_pauli_data = storage_module.save_pauli_data
+from paulitools import (
+    PauliIntCollection,
+    SerializationError,
+    append_pauli_data,
+    iter_pauli_records,
+    load_pauli_data,
+    save_pauli_data,
+    toZX,
+    toZX_extended,
+)
 
 
 class TempDirTestCase(unittest.TestCase):

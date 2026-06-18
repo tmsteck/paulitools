@@ -1,16 +1,21 @@
 import unittest
 import numpy as np
-# Unit tests using unittest framework
-#Import everything from the /src directory:
-import sys
-import os
 from numba.core.errors import NumbaValueError
 import time
 
-#sys.path.append('../src')
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-
-from core import toZX, toString, concatenate_ZX, right_pad, left_pad, symplectic_inner_product, commutes, GLOBAL_INTEGER, bsip_array, commute_array_fast, symplectic_inner_product_int
+from paulitools import (
+    GLOBAL_INTEGER,
+    bsip_array,
+    commutes,
+    commute_array_fast,
+    concatenate_ZX,
+    left_pad,
+    right_pad,
+    symplectic_inner_product,
+    symplectic_inner_product_int,
+    toString,
+    toZX,
+)
 
 
 
@@ -464,5 +469,4 @@ class TestCommutationArrays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 

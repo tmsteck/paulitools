@@ -6,10 +6,7 @@ from typing import Iterable, List, Sequence, Tuple, Union
 import numpy as np
 from numba import njit
 
-try:
-    from ._numba import NUMBA_CACHE
-except ImportError:  # pragma: no cover - legacy direct-module import path
-    from _numba import NUMBA_CACHE  # type: ignore
+from ._numba import NUMBA_CACHE
 
 # Number of bits stored per chunk. We use unsigned 64-bit chunks to avoid
 # sign-extension issues when performing bit manipulation.

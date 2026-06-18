@@ -1,6 +1,6 @@
 # Import core functions for Pauli string manipulation
 from .core import (
-    toZX, toString, right_pad, left_pad, append,
+    toZX, toString, right_pad, left_pad, append, concatenate_ZX,
     symplectic_inner_product, symplectic_inner_product_int,
     commutes, bsip_array, commute_array_fast,
     unpack_sym_forms_to_matrices, GLOBAL_INTEGER,
@@ -10,14 +10,15 @@ from .core import (
 
 # Import group theory functions
 from .group import (
-    row_reduce, null_space, inner_product, radical, centralizer, differences, ingroup
+    row_reduce, generators, null_space, inner_product, radical, centralizer,
+    differences, ingroup, row_space
 )
 
 # Import utility functions
 from .util import (
     toBinary, convert_array_type, popcount, getParity,
     get_pauli_obs, get_pauli_pauli_obs, getCentralizer,
-    Pauli_expectation, filtered_purity, get_purity
+    Pauli_expectation, filtered_purity, filtered_purity_reference, get_purity
 )
 
 from .large_pauli import (
@@ -48,7 +49,7 @@ from .storage import (
 # Define what gets imported with "from paulitools import *"
 __all__ = [
     # Core functions
-    'toZX', 'toString', 'right_pad', 'left_pad', 'append',
+    'toZX', 'toString', 'right_pad', 'left_pad', 'append', 'concatenate_ZX',
     'symplectic_inner_product', 'symplectic_inner_product_int',
     'commutes', 'bsip_array', 'commute_array_fast',
     'unpack_sym_forms_to_matrices', 'GLOBAL_INTEGER',
@@ -57,12 +58,13 @@ __all__ = [
     'to_standard_if_possible',
     
     # Group functions
-    'row_reduce', 'null_space', 'inner_product', 'radical', 'centralizer', 'differences', 'ingroup',
+    'row_reduce', 'generators', 'null_space', 'inner_product', 'radical',
+    'centralizer', 'differences', 'ingroup', 'row_space',
     
     # Utility functions
     'toBinary', 'convert_array_type', 'popcount', 'getParity',
     'get_pauli_obs', 'get_pauli_pauli_obs', 'getCentralizer',
-    'Pauli_expectation', 'filtered_purity', 'get_purity',
+    'Pauli_expectation', 'filtered_purity', 'filtered_purity_reference', 'get_purity',
 
     # Large Pauli helpers
     'MAX_STANDARD_QUBITS', 'PauliInt', 'PauliIntCollection',

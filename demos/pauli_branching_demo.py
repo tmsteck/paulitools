@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,29 +11,7 @@ from typing import Dict, List, Set, Tuple
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = PROJECT_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
-try:
-    from paulitools import (  # type: ignore  # pylint: disable=wrong-import-position
-        GLOBAL_INTEGER,
-        commutes,
-        row_reduce,
-        save_pauli_data,
-        toString,
-        toZX,
-    )
-except ImportError:  # pragma: no cover - fallback for editable checkout
-    from src import (  # type: ignore  # pylint: disable=wrong-import-position
-        GLOBAL_INTEGER,
-        commutes,
-        row_reduce,
-        save_pauli_data,
-        toString,
-        toZX,
-    )
+from paulitools import GLOBAL_INTEGER, commutes, row_reduce, save_pauli_data, toString, toZX
 
 
 @dataclass

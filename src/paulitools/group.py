@@ -6,17 +6,10 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
-try:
-    from ._numba import NUMBA_CACHE
-except ImportError:  # pragma: no cover - legacy direct-module import path
-    from _numba import NUMBA_CACHE  # type: ignore
+from ._numba import NUMBA_CACHE
 
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-
-from core import GLOBAL_INTEGER, symplectic_inner_product, symplectic_inner_product_int, toString
-from util import convert_array_type, toBinary, popcount
+from .core import GLOBAL_INTEGER, symplectic_inner_product, symplectic_inner_product_int, toString
+from .util import convert_array_type, toBinary, popcount
 
 import numpy as np
 

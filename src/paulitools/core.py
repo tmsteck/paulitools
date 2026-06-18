@@ -5,39 +5,21 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
-try:
-    from ._numba import NUMBA_CACHE
-except ImportError:  # pragma: no cover - legacy direct-module import path
-    from _numba import NUMBA_CACHE  # type: ignore
+from ._numba import NUMBA_CACHE
 
-try:  # pragma: no cover - handled during package import
-    from .large_pauli import (
-        MAX_STANDARD_QUBITS,
-        PauliInt,
-        PauliIntCollection,
-        commutes_any as _commutes_any,
-        infer_qubits as _infer_qubits_large,
-        is_pauliint as _is_pauliint,
-        is_pauliint_collection as _is_pauliint_collection,
-        pauliints_to_standard,
-        standard_to_pauliints,
-        symplectic_inner_product_any as _sip_any,
-        toZX_large,
-    )
-except ImportError:  # pragma: no cover - legacy import path
-    from large_pauli import (  # type: ignore
-        MAX_STANDARD_QUBITS,
-        PauliInt,
-        PauliIntCollection,
-        commutes_any as _commutes_any,
-        infer_qubits as _infer_qubits_large,
-        is_pauliint as _is_pauliint,
-        is_pauliint_collection as _is_pauliint_collection,
-        pauliints_to_standard,
-        standard_to_pauliints,
-        symplectic_inner_product_any as _sip_any,
-        toZX_large,
-    )
+from .large_pauli import (
+    MAX_STANDARD_QUBITS,
+    PauliInt,
+    PauliIntCollection,
+    commutes_any as _commutes_any,
+    infer_qubits as _infer_qubits_large,
+    is_pauliint as _is_pauliint,
+    is_pauliint_collection as _is_pauliint_collection,
+    pauliints_to_standard,
+    standard_to_pauliints,
+    symplectic_inner_product_any as _sip_any,
+    toZX_large,
+)
 
 
 GLOBAL_INTEGER = int64

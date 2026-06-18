@@ -12,20 +12,12 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 
-try:  # pragma: no cover - handled during package import
-    from .large_pauli import (
-        PauliInt,
-        PauliIntCollection,
-        is_pauliint,
-        is_pauliint_collection,
-    )
-except ImportError:  # pragma: no cover - legacy import path
-    from large_pauli import (  # type: ignore
-        PauliInt,
-        PauliIntCollection,
-        is_pauliint,
-        is_pauliint_collection,
-    )
+from .large_pauli import (
+    PauliInt,
+    PauliIntCollection,
+    is_pauliint,
+    is_pauliint_collection,
+)
 
 PauliLike = Union[np.ndarray, PauliInt, PauliIntCollection, Iterable[PauliInt]]
 
