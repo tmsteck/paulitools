@@ -6,7 +6,7 @@ PauliTools is a Python library for efficient manipulation and analysis of Pauli 
 
 PauliTools ships as a single `paulitools` Python package. You can treat it as a
 black box—every public entrypoint is exported at module level—so browsing the
-`src/` tree is optional. The sections below highlight the most commonly used
+`src/paulitools/` tree is optional. The sections below highlight the most commonly used
 APIs.
 
 ### Quickstart
@@ -122,7 +122,7 @@ from paulitools import PauliIntCollection, commutation_matrix
 
 The package defaults to non-cached Numba compilation in editable/development
 installs so modern Python/Numba environments can import reliably even when the
-source tree is mapped through `package_dir={"paulitools": "src"}`. Set
+source tree is installed through the standard `src/paulitools` layout. Set
 `PAULITOOLS_NUMBA_CACHE=1` to opt back into Numba disk caching in environments
 where Numba can locate a stable cache path.
 
@@ -133,7 +133,9 @@ with Numba 0.65, and the large-Pauli smoke path passes via
 `toZX_extended("X" * 64)` plus `row_reduce(...)`. The full local `testing/`
 suite passes with `galois`/`ptgalois` optional comparisons skipped when those
 packages are unavailable. The Numba reflected-list warning in `core.append`
-remains a known follow-up rather than a release blocker.
+remains a known follow-up rather than a release blocker. The package now uses
+the standard `src/paulitools/` source layout with project metadata in
+`pyproject.toml`.
 
 ### Fast Conversion Paths
 - **Binary Arrays by Default**: NumPy inputs are treated as `(Z|X)` binary bitplanes; values must be 0/1. A `-1/+1` array is automatically interpreted as eigen-Z data (`-1 → 1`, `+1 → 0`).

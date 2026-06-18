@@ -1,25 +1,28 @@
 import unittest
 import numpy as np
-# Unit tests using unittest framework
-#Import everything from the /src directory:
-import sys
-import os
 from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from core import (
+from paulitools import (
+    GLOBAL_INTEGER,
+    centralizer,
+    commutes,
+    differences,
+    ingroup,
+    inner_product,
+    left_pad,
+    null_space,
+    radical,
+    right_pad,
+    row_reduce,
+    row_space,
+    symplectic_inner_product,
     toZX,
     toString,
-    right_pad,
-    left_pad,
-    symplectic_inner_product,
-    commutes,
-    GLOBAL_INTEGER,
     toZX_extended,
     to_standard_if_possible,
 )
-from group import row_reduce, inner_product, null_space, radical, differences, row_space, centralizer, group, ingroup
+from paulitools.group import group
 try:
     from ptgalois.converter import toZX as toZX_pt
     from ptgalois.converter import toString as toString_pt

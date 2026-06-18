@@ -1,26 +1,29 @@
 import unittest
 import numpy as np
-# Unit tests using unittest framework
-#Import everything from the /src directory:
-import sys
 import os
 from numba.core.errors import NumbaValueError
 from numba.types import int8, float16
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-from core import (
+from paulitools import (
+    GLOBAL_INTEGER,
+    commutes,
+    differences,
+    filtered_purity,
+    filtered_purity_reference,
+    getParity,
+    inner_product,
+    left_pad,
+    null_space,
+    radical,
+    right_pad,
+    row_reduce,
+    symplectic_inner_product,
     toZX,
     toString,
-    right_pad,
-    left_pad,
-    symplectic_inner_product,
-    commutes,
-    GLOBAL_INTEGER,
     toZX_extended,
     to_standard_if_possible,
+    toBinary,
 )
-from group import row_reduce, inner_product, null_space, radical, differences
-from util import toBinary, getParity,filtered_purity, filtered_purity_reference
 #from paulitools.group import 
 #from paulitools import toZX, toString, generator  as toZX_old, toString_old, generator
 # Unit tests usin
@@ -118,7 +121,7 @@ class TestStabilizerPurity(unittest.TestCase):
         
     def test_centralizer(self):
         # Check that the centralizer of the differences is the original stabilizer group
-        from group import centralizer
+        from paulitools import centralizer
         computed_centralizer = toZX(centralizer(self.differences))
         # Convert both to sets of strings for easier comparison
         print(computed_centralizer)

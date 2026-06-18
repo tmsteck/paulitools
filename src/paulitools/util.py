@@ -5,15 +5,9 @@ from numba.core.errors import NumbaTypeError, NumbaValueError
 from operator import ixor
 from numpy import int64
 
-try:
-    from ._numba import NUMBA_CACHE
-except ImportError:  # pragma: no cover - legacy direct-module import path
-    from _numba import NUMBA_CACHE  # type: ignore
+from ._numba import NUMBA_CACHE
 
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-from core import GLOBAL_INTEGER, symplectic_inner_product, toZX, commutes, symplectic_inner_product_int
+from .core import GLOBAL_INTEGER, symplectic_inner_product, toZX, commutes, symplectic_inner_product_int
 import numpy as np
 try:
     from joblib import Parallel, delayed
@@ -216,10 +210,7 @@ def getCentralizer(counts, return_generators=False):
     except ImportError:
         raise ImportError("The galois package is required for getCentralizer")
     
-    try:
-        from group import centralizer, row_reduce as generator
-    except ImportError:
-        raise ImportError("The group module with centralizer and row_reduce functions is required")
+    from .group import centralizer, row_reduce as generator
     
     # Checks how many unique outputs there are so we can iterate over all of them
     unique_shots_count = len(counts.keys())
