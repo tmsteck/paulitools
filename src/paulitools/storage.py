@@ -18,8 +18,9 @@ from .large_pauli import (
     is_pauliint,
     is_pauliint_collection,
 )
+from .zx_array import ZXArray, is_zxarray
 
-PauliLike = Union[np.ndarray, PauliInt, PauliIntCollection, Iterable[PauliInt]]
+PauliLike = Union[np.ndarray, PauliInt, PauliIntCollection, ZXArray, Iterable[PauliInt]]
 
 MAGIC = b"PTSTORE1\n"
 CURRENT_VERSION = 1
@@ -149,6 +150,14 @@ def iter_pauli_records(path: Union[str, os.PathLike]) -> Iterator[Union[np.ndarr
 # ---------------------------------------------------------------------------
 
 def _normalise_input(data: PauliLike) -> Tuple[str, Union[LegacyBatch, PauliBatch]]:
+    if is_zxarray(data):
+        if data.is_large:
+            return "pauliint", _pauli_batch_from_collection(data.pauliint_collection(copy=False))
+        array = data.legacy_array(copy=False)
+        length = int(array[0])
+        values = np.ascontiguousarray(array[1:], dtype=np.int64)
+        return "legacy", LegacyBatch(length=length, values=values)
+
     if isinstance(data, np.ndarray):
         array = np.asarray(data, dtype=np.int64)
         if array.ndim != 1 or array.size == 0:
@@ -161,7 +170,7 @@ def _normalise_input(data: PauliLike) -> Tuple[str, Union[LegacyBatch, PauliBatc
         return "pauliint", _pauli_batch_from_sequence([data])
 
     if is_pauliint_collection(data):
-        return "pauliint", _pauli_batch_from_sequence(list(data.paulis))
+        return "pauliint", _pauli_batch_from_collection(data)
 
     if isinstance(data, Iterable) and not isinstance(data, (str, bytes, bytearray)):
         seq = list(data)
@@ -173,6 +182,22 @@ def _normalise_input(data: PauliLike) -> Tuple[str, Union[LegacyBatch, PauliBatc
 
     raise TypeError(
         "Unsupported data type; expected numpy array, PauliInt, PauliIntCollection, or iterable of PauliInt"
+    )
+
+
+def _pauli_batch_from_collection(collection: PauliIntCollection) -> PauliBatch:
+    if len(collection.paulis) > 0:
+        return _pauli_batch_from_sequence(list(collection.paulis))
+
+    if collection.n_qubits <= 0:
+        raise ValueError("PauliIntCollection must have a positive qubit count")
+    prototype = PauliInt.zeros(collection.n_qubits)
+    chunk_count = prototype.z_chunks.shape[0]
+    return PauliBatch(
+        n_qubits=collection.n_qubits,
+        signs=np.empty(0, dtype=np.uint8),
+        z_chunks=np.empty((0, chunk_count), dtype=np.uint64),
+        x_chunks=np.empty((0, chunk_count), dtype=np.uint64),
     )
 
 

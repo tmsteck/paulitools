@@ -38,6 +38,11 @@ from .large_pauli import (
     commutation_matrix
 )
 
+from .zx_array import (
+    ZXArray,
+    toZXArray,
+)
+
 from .storage import (
     SerializationError,
     save_pauli_data,
@@ -72,6 +77,9 @@ __all__ = [
     'pauli_struct_to_binary', 'pauli_struct_copy',
     'toZX_large', 'symplectic_inner_product_struct', 'symplectic_inner_product_pauliint',
     'commutes_struct', 'commutes_pauliint', 'commutation_matrix',
+
+    # Ergonomic ZX wrapper
+    'ZXArray', 'toZXArray',
 
     # Serialization helpers
     'SerializationError', 'save_pauli_data', 'append_pauli_data', 'load_pauli_data', 'iter_pauli_records',
