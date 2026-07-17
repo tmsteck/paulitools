@@ -1,217 +1,226 @@
-# PauliTools - Efficient Pauli String Operations
+# PauliTools
 
-PauliTools is a Python library for efficient manipulation and analysis of Pauli strings using binary symplectic representations. The library leverages Numba for high-performance computations and provides tools for quantum group theory operations.
+PauliTools is a Python library for fast manipulation and analysis of Pauli
+strings. It uses binary symplectic representations, Numba-compiled kernels,
+and a large-operator backend for stabilizer, commutation, and expectation-value
+workflows.
 
-## Package Structure & Quick Reference
+## Installation
 
-PauliTools ships as a single `paulitools` Python package. You can treat it as a
-black box—every public entrypoint is exported at module level—so browsing the
-`src/paulitools/` tree is optional. The sections below highlight the most commonly used
-APIs.
-
-### Quickstart
+From a checkout of this repository:
 
 ```bash
-pip install paulitools
+python -m pip install -e .
 ```
+
+The project metadata installs NumPy, Numba, `galois`, and Joblib. Joblib is
+used by the parallel expectation helpers, while `galois` is required by
+`getCentralizer`.
+
+Run the test suite from the repository root with:
+
+```bash
+python -m pytest
+```
+
+## Quick start
 
 ```python
 from paulitools import (
-    toZX, toZX_extended,
-    row_reduce, radical,
-    save_pauli_data, append_pauli_data, load_pauli_data,
+    append_pauli_data,
+    centralizer,
+    load_pauli_data,
+    row_reduce,
+    save_pauli_data,
+    toString,
+    toZX,
 )
 
-# Convert strings to binary symplectic form
-gens = toZX(["XX", "YY", "ZZ"])
+# Parse Pauli strings into the packed legacy representation.
+generators = toZX(["XX", "YY", "ZZ"])
 
-# Analyse group structure
-reduced = row_reduce(gens)
-center = radical(gens)
+# Run compiled symplectic/group-theory operations.
+reduced = row_reduce(generators)
+center = centralizer(generators)
+print(toString(reduced))
+print(toString(center))
 
-# Persist results incrementally
-save_pauli_data("stabilizers.pauli", gens)
-append_pauli_data("stabilizers.pauli", toZX(["XI", "IZ"]))
-
-restored = load_pauli_data("stabilizers.pauli")
+# Save and append batches without rewriting the existing records.
+save_pauli_data("stabilizers.ptstore", generators)
+append_pauli_data("stabilizers.ptstore", toZX(["XI", "IZ"]))
+restored = load_pauli_data("stabilizers.ptstore")
 ```
 
-### Storage & Persistence API
+All of the main public entry points are re-exported from `paulitools`, so
+consumers do not need to import the implementation modules directly.
 
-The `storage` module provides an append-friendly container format that stores
-NumPy `.npy` payloads inside a log-structured binary file. Use it whenever you
-need to checkpoint work or build large operator libraries.
+## Representations
 
-| Function | Description |
-| --- | --- |
-| `save_pauli_data(path, data, append=False, user_metadata=None)` | Write a legacy ZX array or `PauliIntCollection` to disk. Set `append=True` to add a new batch to an existing file. |
-| `append_pauli_data(path, data)` | Shorthand for `save_pauli_data(..., append=True)`. |
-| `load_pauli_data(path, include_metadata=False)` | Read and reconstruct the stored operators. Returns either the legacy array or a `PauliIntCollection`; optionally returns `(data, metadata)` when `include_metadata=True`. |
-| `iter_pauli_records(path)` | Stream batches from disk without materialising the full dataset. Useful for large archives. |
-| `SerializationError` | Raised when file headers, chunk sizes, or checksums fail validation. |
+PauliTools has two interoperable representations:
 
-> **Tip:** All payloads remain NumPy-portable because they are stored as
-> `.npy` blobs. If you change the number of qubits or the ZX length, open a new
-> file; appends enforce consistent dimensions to keep the container compact.
+| Representation | Use | Conversion |
+| --- | --- | --- |
+| Legacy packed `numpy.ndarray` | Fast Numba kernels and systems up to 31 qubits | `toZX(...)` |
+| `PauliInt` / `PauliIntCollection` | Operators larger than 31 qubits and chunked storage | `toZX_extended(...)` or `toZX_large(...)` |
 
-### Module Overview
+The legacy array stores the qubit count in element `0`. Each following `int64`
+packs the phase sign, Z bits, and X bits. The binary input convention is
+`Z|X`: a row of length `2 * n_qubits` contains all Z bits followed by all X
+bits.
 
-The following tables summarise the rest of the public API. All functions are
-importable directly from `paulitools`.
-
-#### Core Operations (`paulitools.core`)
-
-| Function | Purpose |
-| --- | --- |
-| `toZX(input_data, fast_input_type=None)` | Parse Pauli strings, tuples, or binary/eigen arrays into legacy ZX integer form. Fast paths available via ``fast_input_type``. |
-| `toZX_extended(input_data, force_large=False)` | Automatically selects the large-operator backend (`PauliIntCollection`) when the system exceeds 31 qubits. |
-| `toString(integer_rep)` / `toString_extended(pauli_data)` | Convert legacy or extended forms back to human-readable strings. |
-| `right_pad`, `left_pad`, `append` | Resize or concatenate symplectic forms. |
-| `symplectic_inner_product`, `symplectic_inner_product_extended` | Compute the symplectic inner product for legacy or mixed representations. |
-| `commutes`, `commutes_extended` | Check pairwise commutation. |
-| `commute_array_fast`, `bsip_array` | Build commutation matrices for operator sets. |
-| `to_standard_if_possible` | Down-convert a large representation to legacy form when the qubit count permits. |
-
-#### Group Theory (`paulitools.group`)
-
-| Function | Purpose |
-| --- | --- |
-| `row_reduce(paulis)` | Gaussian elimination over GF(2) to find independent generators. |
-| `row_space(paulis)` | Generate the row space of an operator set. |
-| `null_space(matrix)` | Compute the GF(2) null space of a binary matrix. |
-| `inner_product(paulis)` | Produce the full pairwise symplectic inner product matrix. |
-| `radical(paulis, reduced=False)` | Find the center (radical) of a stabiliser group. |
-| `centralizer(paulis, reduced=False)` | Compute all operators commuting with a given set. |
-| `differences(paulis, paulis2=None)` | Compare generators or compute relative differences between two sets. |
-
-#### Utilities (`paulitools.util`)
-
-| Function | Purpose |
-| --- | --- |
-| `toBinary(pauli)` | Convert legacy ZX integers into `(Z|X)` binary matrices. |
-| `convert_array_type(arr, dtype)` | Cast arrays to Numba-friendly dtypes. |
-| `popcount`, `getParity(pauli, basis)` | Bit-counting helpers for interpreting operators. |
-| `get_pauli_obs`, `get_pauli_pauli_obs`, `Pauli_expectation` | Expectation value utilities for simulation data. |
-| `getCentralizer(counts, return_generators=False)` | Stitch measurement data into stabiliser descriptions. |
-
-#### Large Operator Helpers (`paulitools.large_pauli`)
-
-| Class / Function | Purpose |
-| --- | --- |
-| `PauliInt`, `PauliIntCollection` | Structured storage for arbitrarily large Pauli operators. Compatible with Numba. |
-| `create_pauli_struct`, `pauli_struct_set_bits`, `pauli_struct_get_bits` | Low-level struct helpers for Numba-compiled kernels. |
-| `symplectic_inner_product_struct`, `commutes_struct` | Symplectic operations on struct tuples. |
-| `commutation_matrix(collection)` | Generate a full commutation matrix for `PauliIntCollection`. |
-| `toZX_large` | Parse strings, tuples, or binary rows into `PauliIntCollection`. |
-
-All of these are re-exported at the package level, so the following works:
-
-```python
-from paulitools import PauliIntCollection, commutation_matrix
-```
-
-## 🔧 Technical Features
-
-### Performance Optimizations
-- **Numba JIT Compilation**: Most functions use `@njit()` for near-C performance
-- **Bitwise Operations**: Efficient manipulation using integer bit operations
-- **Vectorized Operations**: Matrix-based commutation analysis for large operator sets
-- **Memory Efficiency**: Compact integer representation of Pauli operators
-
-### Numba Cache Policy
-
-The package defaults to non-cached Numba compilation in editable/development
-installs so modern Python/Numba environments can import reliably even when the
-source tree is installed through the standard `src/paulitools` layout. Set
-`PAULITOOLS_NUMBA_CACHE=1` to opt back into Numba disk caching in environments
-where Numba can locate a stable cache path.
-
-### Current Package Status
-
-In the `robels-modern` environment, the editable package imports on Python 3.14
-with Numba 0.65, and the large-Pauli smoke path passes via
-`toZX_extended("X" * 64)` plus `row_reduce(...)`. The full local `testing/`
-suite passes with `galois`/`ptgalois` optional comparisons skipped when those
-packages are unavailable. The Numba reflected-list warning in `core.append`
-remains a known follow-up rather than a release blocker. The package now uses
-the standard `src/paulitools/` source layout with project metadata in
-`pyproject.toml`.
-
-### Fast Conversion Paths
-- **Binary Arrays by Default**: NumPy inputs are treated as `(Z|X)` binary bitplanes; values must be 0/1. A `-1/+1` array is automatically interpreted as eigen-Z data (`-1 → 1`, `+1 → 0`).
-- **`fast_input_type` Shortcut**: Skip validation when the encoding is known. Use `fast_input_type="binary_string"` for pure Z|X strings or `fast_input_type="eigen_z"` for ±1 eigenvalue tables.
-- **Numba-backed Packing**: Internal bit packing is compiled with Numba for low overhead bulk ingestion.
-
-```python
-from paulitools import toZX
-
-# Stream large eigenvalue tables straight into ZX form
-measurements = [-1, 1, -1, 1]
-zx = toZX(measurements, fast_input_type="eigen_z")
-
-# Pre-formatted binary strings can bypass validation too
-binary_batches = ["0011", "1100"]
-zx_fast = toZX(binary_batches, fast_input_type="binary_string")
-```
-
-### Data Formats
-- **ZX Representation**: Pauli operators stored as integers with separate X and Z bit fields
-- **Sign Handling**: Dedicated sign bit for phase tracking
-- **Flexible Input**: Multiple input formats automatically detected and converted
-
-### Mathematical Foundation
-- **Symplectic Geometry**: Based on symplectic inner product over GF(2)
-- **Stabilizer Formalism**: Full support for stabilizer group operations
-- **Linear Algebra over GF(2)**: Gaussian elimination and null space computation
-
-## 🚀 Usage Examples
+`toZX_extended` selects the legacy representation for systems up to
+`MAX_STANDARD_QUBITS` (31) and returns a `PauliIntCollection` for larger
+systems. Pass `force_large=True` to use the large backend for a small system
+when backend-independent code or testing requires it.
 
 ```python
 from paulitools import (
-  toZX, toString,
-  commutes, commutation_matrix,
-  toZX_extended, symplectic_inner_product_extended,
-  PauliIntCollection,
+    PauliIntCollection,
+    commutation_matrix,
+    symplectic_inner_product_extended,
+    toString_extended,
+    toZX_extended,
 )
 
-# Legacy representation (≤31 qubits)
-paulis = toZX(['XX', 'YY', 'ZZ'])
-print("Encoded as:", paulis)
+large = toZX_extended("X" * 64)
+assert isinstance(large, PauliIntCollection)
+print(toString_extended(large))
 
-# Symplectic checks
-p1 = toZX('XX')
-p2 = toZX('ZI')
-print("XX and ZI commute:", bool(commutes(p1, p2)))
-
-# Large operators (supports arbitrary qubits)
-large = toZX_extended('X' * 70)
-print("Large operator type:", type(large))
-print("Symplectic overlap:", symplectic_inner_product_extended(large, large))
-
-# Commutation matrix for a PauliIntCollection
-collection = PauliIntCollection(3, toZX_extended(['XXI', 'YYI', 'ZZI'], force_large=True).paulis)
-print(commutation_matrix(collection))
+x0 = toZX_extended("X" + "I" * 63)
+z0 = toZX_extended("Z" + "I" * 63)
+print(symplectic_inner_product_extended(x0, z0))  # 1
+print(commutation_matrix(toZX_extended(["XX", "YY"], force_large=True)))
 ```
 
-## 🧪 Dependencies
+## Mutable `ZXArray` wrapper
 
-- **NumPy**: Array operations and linear algebra
-- **Numba**: JIT compilation for performance
-- **Galois**: GF(2) arithmetic (optional, for advanced features)
-- **Joblib**: Parallel processing (optional)
+`ZXArray` is the ergonomic, mutable boundary for both backends. It supports
+construction from strings, raw packed arrays, binary bit matrices, and
+`PauliIntCollection` objects. Use `.legacy_array()` explicitly when passing a
+legacy-backed value to a Numba kernel.
 
-## 📊 Performance Notes
+```python
+from paulitools import ZXArray, toZXArray
 
-- Functions with `@njit()` decorator compile on first use (slight initial delay)
-- Large operator sets benefit significantly from `commute_array_fast()`
-- Binary operations are optimized for up to 64-qubit systems
-- Memory usage scales as O(n) for n operators, O(n²) for commutation matrices
+paulis = toZXArray(["XX", "-ZI"])
+paulis.set_bits(0, 0, z_bit=1, x_bit=0)
+paulis.set_sign(1, 1)
+paulis.append("YY")
 
-## 🔬 Applications
+print(paulis.to_strings())       # ['+ZX', '-ZI', '+YY']
+print(paulis.binary())           # Z|X bit matrix
+print(paulis.legacy_array())     # packed array for row_reduce/centralizer
 
-- **Quantum Error Correction**: Stabilizer code analysis
-- **Quantum Simulation**: Pauli operator manipulation
-- **Quantum Algorithms**: Efficient Hamiltonian representation
-- **Research**: Group theory analysis of quantum systems
+# The same wrapper can hold arbitrarily large operators.
+large = ZXArray.identities(64, count=2)
+large.set_bits(0, 0, x_bit=1)
+print(large.backend, large.to_strings()[0])
+```
 
-This library provides a comprehensive toolkit for working with Pauli operators in quantum computing applications, with emphasis on computational efficiency and mathematical rigor.
+Useful constructors and accessors include:
+
+- `ZXArray.empty(n_qubits)` and `ZXArray.identities(n_qubits, count=...)`
+- `ZXArray.from_bits(z_bits, x_bits, signs=...)`
+- `toZXArray(input_data, force_large=False)`
+- `.z_bits()`, `.x_bits()`, `.binary()`, `.signs()`, and `.to_strings()`
+- `.get_bits()`, `.set_bits()`, `.set_sign()`, `.set_pauli()`, `.append()`, and `.extend()`
+- `.commutes(other)` and `.symplectic_inner_product(other)` for single-Pauli wrappers
+
+## Core operations
+
+The most commonly used conversion and symplectic functions are:
+
+| Function | Purpose |
+| --- | --- |
+| `toZX(input_data, fast_input_type=None)` | Parse Pauli strings, tuples, binary strings, or binary arrays into legacy packed form. |
+| `toString(integer_rep)` | Convert a legacy packed array to signed Pauli strings. |
+| `symplectic_inner_product(a, b, k=None)` | Compute the legacy symplectic inner product. |
+| `commutes(a, b, length=None)` | Test whether two legacy operators commute. |
+| `bsip_array(...)` / `commute_array_fast(...)` | Build dense pairwise symplectic or commutation matrices. |
+| `right_pad(...)` / `left_pad(...)` / `append(...)` | Resize or combine packed legacy forms. |
+
+`toZX` accepts ordinary Pauli strings such as `"-XYZI"`, lists of strings,
+indexed tuples such as `[("X", 0), ("Z", 2)]`, and `Z|X` binary arrays. For
+validated high-throughput inputs, `fast_input_type` accepts:
+
+- `"binary_string"` for `Z|X` strings containing only `0` and `1`;
+- `"eigen_z"` for arrays of `-1/+1` eigenvalues, where `-1` sets a Z bit.
+
+The fast modes bypass input validation, so use them only when the encoding is
+known to be correct.
+
+## Group and stabilizer operations
+
+Functions in the group-theory workflow operate on packed legacy arrays:
+
+| Function | Purpose |
+| --- | --- |
+| `row_reduce(paulis)` / `generators(paulis)` | Find an independent GF(2) basis. |
+| `row_space(paulis)` | Enumerate the row space. |
+| `null_space(matrix)` | Compute a GF(2) null space. |
+| `inner_product(paulis)` | Compute the pairwise symplectic inner-product matrix. |
+| `radical(paulis, reduced=False)` | Find the center/radical of a Pauli set. |
+| `centralizer(paulis, reduced=False)` | Find operators commuting with a Pauli set. |
+| `differences(paulis, paulis2=None)` | Compute within-set or pairwise relative differences. |
+| `ingroup(candidates, pauli_set, reduced=False)` | Test membership in the generated span. |
+
+For measurement and purity workflows, the package also exports
+`filtered_purity`, `filtered_purity_reference`, `get_purity`,
+`get_pauli_obs`, `get_pauli_pauli_obs`, `Pauli_expectation`, and
+`getCentralizer`.
+
+## Persistent storage
+
+`save_pauli_data` writes a checksum-validated, log-structured archive. The
+archive supports both legacy arrays and large `PauliIntCollection` batches;
+`ZXArray` values are accepted as well. Records contain NumPy-compatible
+payloads and preserve the representation selected for the file.
+
+```python
+from paulitools import iter_pauli_records, load_pauli_data, save_pauli_data
+
+save_pauli_data(
+    "measurements.ptstore",
+    toZXArray(["XX", "YY"]),
+    user_metadata={"experiment": 42},
+)
+
+data, metadata = load_pauli_data(
+    "measurements.ptstore",
+    include_metadata=True,
+)
+
+for batch in iter_pauli_records("measurements.ptstore"):
+    print(batch)
+```
+
+Appending requires matching representation and qubit dimensions. Use a new
+archive when those dimensions change.
+
+## Performance notes
+
+- Most hot-path conversions, symplectic checks, and packed group operations are
+  Numba-compiled.
+- The first call to a compiled function may incur JIT compilation overhead.
+- `PAULITOOLS_NUMBA_CACHE=1` enables Numba disk caching; caching is disabled by
+  default in editable/development contexts.
+- Dense commutation matrices require quadratic storage in the number of
+  operators, while packed/chunked operator storage scales with the number of
+  operators and qubit chunks.
+
+## Demos
+
+The Pauli branching demo can be run from the repository root:
+
+```bash
+python -m demos.pauli_branching_demo
+```
+
+See [`demos/README.md`](demos/README.md) for command-line arguments and the
+demo workflow.
+
+## Applications
+
+PauliTools is intended for quantum error correction, stabilizer-code analysis,
+quantum simulation, Pauli Hamiltonian workflows, and other research code that
+needs repeated Pauli-string operations.
