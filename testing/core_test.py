@@ -304,7 +304,7 @@ class TestLeftPad(unittest.TestCase):
     def test_left_pad(self):
         sym_form = toZX(['XX'])
         result_size = 4
-        expected_output = toZX(['XXII'])
+        expected_output = toZX(['IIXX'])
         result = left_pad(sym_form, result_size)
         self.assertEqual(result[0], expected_output[0])
         np.testing.assert_array_equal(result[1:], expected_output[1:])
@@ -469,4 +469,3 @@ class TestCommutationArrays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

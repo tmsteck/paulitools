@@ -1,83 +1,41 @@
+"""Packed-Pauli conversions and Bell-outcome estimators.
+
+The estimators below operate on the explicitly documented Bell-outcome sign
+functions. They do not infer a generic state expectation from arbitrary samples.
+"""
+
+from collections.abc import Mapping
+from numbers import Integral
+
 import numpy as np
-import unittest
-from numba import jit, types, njit, prange
-from numba.core.errors import NumbaTypeError, NumbaValueError
-from operator import ixor
-from numpy import int64
+from numba import njit, prange
 
 from ._numba import NUMBA_CACHE
-
-from .core import GLOBAL_INTEGER, symplectic_inner_product, toZX, commutes, symplectic_inner_product_int
-import numpy as np
-try:
-    from joblib import Parallel, delayed
-except ImportError:
-    # Fallback for parallel execution if joblib is not available
-    class Dummy:
-        def __call__(self, *args, **kwargs):
-            return list(map(args[0], args[1]))
-    
-    def delayed(func):
-        return func
-    
-    Parallel = Dummy
+from .core import _validate_legacy_array_nb, symplectic_inner_product_int, toZX
 
 
-
-@njit
-def AtoBinary(pauli):
-    k = pauli[0]
-    length = 2*k+1
-    #Convert int to binary, padd to length, remove the 0b prefix
-    #binforms = #array of strings of length 2k+1
-    binforms = np.empty((len(pauli)-1), dtype=object)
-    for i in range(len(pauli)-1):
-        binforms[i] = bin(pauli[i+1])[2:].zfill(length)[:-1][::-1]
-    output_matrix = np.zeros((2*k, len(pauli)-1))
-    for i in range(len(binforms)):
-        for j in range(2*k):
-            #Only update if it's a 1:
-            if binforms[i][j] == '1':
-                output_matrix[j,i] = int(binforms[i][j])
-    return output_matrix
-
-@njit #Tested ISH
+@njit(cache=NUMBA_CACHE)
 def toBinary(pauli):
-    """
-    Converts an array of Pauli integers to a binary matrix representation.
-
-    Args:
-        pauli (np.ndarray): Input array where pauli[0] = k (number of qubits),
-                            and pauli[1:] are integers representing Pauli operators.
-
-    Returns:
-        np.ndarray: A binary matrix of shape (2*k, len(pauli)-1).
-    """
+    """Return a row-major ``(number_of_operators, 2*k)`` Z|X bit matrix."""
+    if pauli.ndim != 1:
+        raise ValueError("Pauli input must be a one-dimensional packed array")
+    _validate_legacy_array_nb(pauli)
     k = pauli[0]
-    length = 2 * k + 1  # Total bits including the sign bit
-    num_paulis = len(pauli) - 1  # Number of Pauli operators
-
-    # Initialize the output matrix
-    output_matrix = np.zeros((2 * k, num_paulis), dtype=np.int8)
-
-    for i in range(num_paulis):
-        # Get the integer representation of the Pauli operator and remove the sign bit
-        integer = pauli[i + 1] >> 1  # Shift right to remove the sign bit
-
+    output = np.empty((len(pauli) - 1, 2 * k), dtype=np.int8)
+    for i in range(len(pauli) - 1):
+        value = pauli[i + 1] >> 1
         for j in range(2 * k):
-            # Extract bit j and assign to the output matrix
-            output_matrix[j, i] = (integer >> j) & 1
+            output[i, j] = (value >> j) & 1
+    return output
 
-    return output_matrix.T
 
-@njit
+@njit(cache=NUMBA_CACHE)
 def convert_array_type(arr, dtype):
     new_arr = np.empty(arr.shape, dtype=dtype)
     new_arr[:] = arr
     return new_arr
-from numba import njit
 
-# A helper function to count set bits (popcount), which is very fast in Numba.
+
 @njit(cache=NUMBA_CACHE)
 def popcount(n):
     """Counts the number of set bits in an integer (Hamming weight)."""
@@ -130,6 +88,11 @@ def getParity(pauli, basis='Y'):
     Returns:
         int: 0 if the count of the basis operators is even, 1 if it is odd.
     """
+    if pauli.ndim != 1:
+        raise ValueError("Pauli input must be a one-dimensional packed array")
+    _validate_legacy_array_nb(pauli)
+    if len(pauli) != 2:
+        raise ValueError("getParity requires exactly one packed Pauli")
     k = pauli[0]
     int_rep = pauli[1]
 
@@ -140,428 +103,295 @@ def getParity(pauli, basis='Y'):
     elif basis == 'Z':
         return z_parity_int(int_rep, k)
 
-    return 0
+    raise ValueError("basis must be X, Y, or Z")
+
+
+def _as_legacy_paulis(data):
+    """Normalize supported Python inputs before entering packed kernels."""
+    from .pauli import Pauli
+    from .zx_array import ZXArray
+
+    if isinstance(data, (Pauli, ZXArray)):
+        data = data.legacy_array(copy=False)
+    if isinstance(data, np.ndarray) and data.ndim == 1:
+        if not np.issubdtype(data.dtype, np.integer):
+            raise TypeError("Packed Pauli arrays must have integer dtype")
+        if data.dtype.kind == "u" and np.any(data > np.iinfo(np.int64).max):
+            raise ValueError("Packed Pauli integers must fit signed int64")
+        result = np.ascontiguousarray(data, dtype=np.int64)
+    else:
+        result = toZX(data)
+    _validate_legacy_array_nb(result)
+    return result
+
+
+def _probability_weights(values):
+    raw = np.asarray(values)
+    if np.iscomplexobj(raw):
+        raise ValueError("Probabilities must be real")
+    weights = np.asarray(values, dtype=np.float64)
+    if weights.ndim != 1 or weights.size == 0:
+        raise ValueError("A nonempty one-dimensional probability array is required")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("Probabilities must be finite and nonnegative")
+    total = float(weights.sum())
+    if not np.isfinite(total) or not np.isclose(total, 1.0, rtol=1e-10, atol=1e-12):
+        raise ValueError("Probabilities must sum to one")
+    return np.ascontiguousarray(weights / total)
+
+
+def _outcomes_from_keys(keys, k=None):
+    values = np.empty(len(keys), dtype=np.int64)
+    if len(keys) == 0:
+        raise ValueError("At least one outcome is required")
+    for i, key in enumerate(keys):
+        if not isinstance(key, str):
+            raise TypeError("Outcome keys must be Pauli strings or Z|X bit strings")
+        outcome = toZX(key)
+        _validate_legacy_array_nb(outcome)
+        if k is None:
+            k = int(outcome[0])
+        if outcome[0] != k:
+            raise ValueError("All outcomes and observables must have the same qubit count")
+        values[i] = outcome[1]
+    return k, values
+
+
+@njit(cache=NUMBA_CACHE)
+def _signed_shot_weights(shots, weights, k, include_shot_y):
+    result = weights.copy()
+    if include_shot_y:
+        for j in range(len(shots)):
+            if y_parity_int(shots[j], k):
+                result[j] = -result[j]
+    return result
+
+
+@njit(cache=NUMBA_CACHE)
+def _weighted_pauli_row(pauli, shots, weights, k):
+    pauli_parity = y_parity_int(pauli, k) ^ (pauli & 1)
+    total = 0.0
+    for j in range(len(shots)):
+        exponent = pauli_parity ^ symplectic_inner_product_int(pauli, shots[j], k)
+        total += weights[j] if exponent == 0 else -weights[j]
+    return total
+
+
+@njit(cache=NUMBA_CACHE, nogil=True)
+def _weighted_pauli_estimates(paulis, shots, weights, k, include_shot_y):
+    signed_weights = _signed_shot_weights(shots, weights, k, include_shot_y)
+    result = np.empty(len(paulis), dtype=np.float64)
+    for i in range(len(paulis)):
+        result[i] = _weighted_pauli_row(paulis[i], shots, signed_weights, k)
+    return result
+
+
+@njit(cache=NUMBA_CACHE, nogil=True, parallel=True)
+def _weighted_pauli_estimates_parallel(paulis, shots, weights, k, include_shot_y):
+    signed_weights = _signed_shot_weights(shots, weights, k, include_shot_y)
+    result = np.empty(len(paulis), dtype=np.float64)
+    for i in prange(len(paulis)):
+        result[i] = _weighted_pauli_row(paulis[i], shots, signed_weights, k)
+    return result
+
+
+def _dictionary_expectations(pauli_input, probs, parallel, include_shot_y):
+    if not isinstance(probs, Mapping):
+        raise TypeError("probs must map outcome strings to probabilities")
+    paulis = _as_legacy_paulis(pauli_input)
+    weights = _probability_weights(list(probs.values()))
+    k, shots = _outcomes_from_keys(list(probs), int(paulis[0]))
+    kernel = _weighted_pauli_estimates_parallel if parallel else _weighted_pauli_estimates
+    return kernel(paulis[1:], shots, weights, k, include_shot_y)
+
 
 def get_pauli_obs(pauli_input, probs, parallel=False):
+    r"""Evaluate the Bell-outcome estimator ``sum_s p(s) (-1)^(sign(P)+Y(P)+<P,s>)``.
+
+    ``Y`` is the number of Y factors modulo two and ``<P,s>`` is the binary
+    symplectic product. ``pauli_input`` accepts a Pauli string, a list of strings,
+    a ``Pauli``/``ZXArray`` object, or a one-dimensional packed integer array.
+    These legacy estimators support up to 31 qubits and real observable phases.
+    Outcome keys are Pauli strings or
+    Z|X bit strings of the same width. Outcome phase signs are ignored; an
+    observable's minus sign negates its estimate. This explicitly chosen sign
+    convention is not a generic state-expectation reconstruction.
+
+    Probabilities must be nonempty, finite, nonnegative, and sum to one within
+    floating-point tolerance; accepted rounding error is normalized away.
+    ``parallel=True`` uses compiled threads across observables. Returns a float
+    array, including for a single observable.
     """
-    Calculate expectation values of Pauli operators.
-    
-    Parameters:
-        pauli_input: a Pauli string or a list of Pauli strings
-        probs: a dictionary of probabilities where keys are bit-strings and values are probabilities
-        parallel (bool): Whether to use parallel execution
-    
-    Returns:
-        np.ndarray: The expectation values of the Pauli operator(s)
-    """
-    pauli = pauli_input.copy()
-    pauliZX = toZX(pauli)
-    expectations = np.zeros(len(pauliZX) - 1)
-    
-    def get_val(pauli, shot):
-        yParity_P = getParity(pauli, basis='Y')
-        comm_val = 1 - commutes(pauli, shot)  # 1 if they anti-commute, 0 if they commute
-        return np.power(-1, (yParity_P + comm_val) % 2)
-    
-    for key in probs.keys():
-        keyZX = toZX(key)
-        if parallel:
-            results = Parallel(n_jobs=-1)(delayed(get_val)(pauliZX[i+1:i+2], keyZX) for i in range(len(pauliZX)-1))
-            expectations += np.array(results) * probs[key]
-        else:
-            for i in range(len(pauliZX) - 1):
-                val = get_val(pauliZX[i+1:i+2], keyZX)
-                expectations[i] += val * probs[key]
-    
-    return expectations
+    return _dictionary_expectations(pauli_input, probs, parallel, False)
+
 
 def get_pauli_pauli_obs(pauli_input, probs, parallel=False):
+    r"""Evaluate ``sum_s p(s) (-1)^(sign(P)+Y(P)+<P,s>+Y(s))``.
+
+    This is the Bell-outcome convention with the additional outcome Y parity.
+    Input, sign, probability, and parallelism contracts match ``get_pauli_obs``.
     """
-    Calculate expectation values of Pauli operators, including Y parity of the shot.
-    
-    Parameters:
-        pauli_input: a Pauli string or a list of Pauli strings
-        probs: a dictionary of probabilities where keys are bit-strings and values are probabilities
-        parallel (bool): Whether to use parallel execution
-    
-    Returns:
-        np.ndarray: The expectation values of the Pauli operator(s)
-    """
-    pauli = pauli_input.copy()
-    pauliZX = toZX(pauli)
-    expectations = np.zeros(len(pauliZX) - 1)
-    
-    def get_val(pauli, shot):
-        yParity = getParity(pauli, basis='Y')
-        comm_val = 1 - commutes(pauli, shot)  # 1 if they anti-commute, 0 if they commute
-        yParity_shot = getParity(shot, basis='Y')  # Y parity of the shot
-        return np.power(-1, (yParity + comm_val + yParity_shot) % 2)
-    
-    for key in probs.keys():
-        keyZX = toZX(key)
-        if parallel:
-            results = Parallel(n_jobs=-1)(delayed(get_val)(pauliZX[i+1:i+2], keyZX) for i in range(len(pauliZX)-1))
-            expectations += np.array(results) * probs[key]
-        else:
-            for i in range(len(pauliZX) - 1):
-                val = get_val(pauliZX[i+1:i+2], keyZX)
-                expectations[i] += val * probs[key]
-    
-    return expectations
+    return _dictionary_expectations(pauli_input, probs, parallel, True)
+
 
 def getCentralizer(counts, return_generators=False):
+    """Return the historical *center within the span* of outcome differences.
+
+    Keys are equally wide Pauli strings or Z|X bit strings; count values are
+    ignored. Cyclic differences span all pairwise differences without allocating
+    a quadratic matrix. The returned center is a binary Z|X row matrix, matching
+    ``group.centralizer``'s historical contract, not the full ambient centralizer.
+    With ``return_generators=True``, also return its reduced packed generators.
     """
-    Given Paulis in the ZX form, generates part of the group by adding samples 
-    and then computes the center.
+    from .group import centralizer, differences, row_reduce
 
-    Args:
-        counts: a dictionary of probabilities and bit-strings (No Qiskit form)
-        return_generators: if true, returns the generators of the group
-    
-    Returns:
-        The centralizer of the group, and the generators if return_generators is True
-    """
-    try:
-        import galois
-    except ImportError:
-        raise ImportError("The galois package is required for getCentralizer")
-    
-    from .group import centralizer, row_reduce as generator
-    
-    # Checks how many unique outputs there are so we can iterate over all of them
-    unique_shots_count = len(counts.keys())
-    qubits = len(list(counts.keys())[0]) // 2
-    group = galois.GF(2).Zeros((unique_shots_count**2, 2*qubits))
+    if not isinstance(counts, Mapping):
+        raise TypeError("counts must map outcome strings to counts or probabilities")
+    k, values = _outcomes_from_keys(list(counts))
+    paulis = np.empty(len(values) + 1, dtype=np.int64)
+    paulis[0], paulis[1:] = k, values
+    generators = row_reduce(differences(paulis))
+    center = centralizer(generators, reduced=True)
+    return (center, generators) if return_generators else center
 
-    paulis = [key for key in counts.keys()]
-    pauliZX = toZX(paulis)
-    
-    for i in range(unique_shots_count):
-        for j in range(unique_shots_count):
-            if i > j:
-                # Add the binary representations of Paulis i and j
-                group[unique_shots_count*i+j] = toBinary(np.array([pauliZX[0], pauliZX[i+1] ^ pauliZX[j+1]]))
-    
-    # Row reduces the group to get the generators
-    generators = generator(group)
 
-    # Computes the center of the generators
-    center_symplectic = centralizer(generators, reduced=True)
-    
-    if return_generators:
-        return center_symplectic, generators
+def _packed_shot_scalar(value, max_value, float_limit):
+    if isinstance(value, Integral):
+        packed = int(value)
+    elif isinstance(value, (float, np.floating)):
+        limit = min(float_limit, 2 ** (np.finfo(type(value)).nmant + 1))
+        if not np.isfinite(value) or value != np.floor(value):
+            raise ValueError("Packed shots must be finite integers")
+        if abs(value) >= limit:
+            raise ValueError("Floating packed shots may have lost integer precision; use integer/object storage")
+        packed = int(value)
     else:
-        return center_symplectic
+        raise TypeError("Packed shots must be integer scalars")
+    if packed < 0 or packed > max_value:
+        raise ValueError("Packed shot has bits outside the declared qubit width")
+    return packed
+
 
 def Pauli_expectation(shots, pauli):
-    """
-    Shots should be a (N x 2) array, where N is the number of unique shots
-    
-    Returns the expectation value of the Pauli string given the samples:
-    
-    Args:
-        shots (np.ndarray): An array of shots. shots[i,1] is the probability of Pauli shots[i,0]
-        pauli (np.ndarray): A Pauli string in bsf format (array of ints)
-    Returns:
-        float: The expectation value of the Pauli string
-    """
-    k = pauli[0]
-    Y_check = toZX(['Y'*k])
-    
-    def get_sign(shot, pauli):
-        yParity = symplectic_inner_product_int(pauli, Y_check[1],k)
-        comm_value = symplectic_inner_product_int(shot, pauli, k)
-        return np.power(-1, ((yParity + comm_value) % 2))
-    
-    expectation = 0.0
-    for i in range(len(shots)):
-        shot_value = shots[i, 0]
-        prob = shots[i, 1]
-        sign = get_sign(np.array([k, shot_value]), pauli)
-        expectation += sign * prob
-    
-    return expectation
-        
-        
-#@njit()
-def filtered_purity_old(generators, shots, shot_parities=np.zeros(0, dtype=np.int8)):
-    r"""
-    Computes the filtered purity of some set of generators given noisy shots. 
-    
-    $$
-    \langle (-1)^{\pi_y(i)(\Pi_{g \in G} ((-1)^{\pi_y(g) + \langle i,g \rangle} == 1))} \rangle_{i \in S}
-    $$
-    First, compute the inner product between G and the set of shots S. 
-    Then, compute as vectors the $Y$ parity of each shot, and of each generator
-    
-    
-    Args:
-        samples (ndarray): ZX array of samples (ie, Pauli group element generators $g\in G$)
-        shots (nadarray): ZX array of the shots (ie, direct samples with the conjugate problem)
-        shot_parities (ndarray): Precomputed Y parities of the shots, if available
-    
-    Returns:
-        float: The computed filtered purity
-    """
-    if len(generators) <= 1 or len(shots) <= 1:
-        raise Exception("Input is trivial. either the input is missing the qubit information at index zero, or it is an empty set being passed")
-    
-    k = generators[0]
-    num_generators = len(generators) - 1
-    num_shots = len(shots) - 1
-    
-    # Precompute all parities
-    if len(shot_parities) != num_shots:
-        shot_parities = np.zeros(num_shots, dtype=np.int8)
-        for i in range(num_shots):
-            shot_parities[i] = getParity(np.array([k, shots[i+1]]), 'Y')
-    
-    gen_parities = np.zeros(num_generators, dtype=np.int8)
-    for j in range(num_generators):
-        gen_parities[j] = getParity(np.array([k, generators[j+1]]), 'Y')
-    
-    # Create the full inner product matrix
-    inner_matrix = np.zeros((num_shots, num_generators), dtype=np.int8)
-    for i in range(num_shots):
-        for j in range(num_generators):
-            inner_matrix[i, j] = symplectic_inner_product_int(shots[i+1], generators[j+1], k)
-    
-    # Vectorized computation of the filtered purity
-    # Add generator parities to each row of the inner product matrix
-    exponent_matrix = (inner_matrix + gen_parities.reshape(1, -1)) % 2
-    
-    # Sum along generator axis to get total exponent for each shot
-    total_exponents = np.sum(exponent_matrix, axis=1) % 2
-    
-    # Only keep shots where total exponent is 0 (generator product = +1)
-    valid_shots = (total_exponents == 0)
-    
-    # Compute purity contribution from valid shots
-    purity_contributions = np.where(shot_parities == 0, 1, -1)
-    filtered_contributions = purity_contributions * valid_shots.astype(np.int8)
+    """Return the same scalar Bell-outcome estimator as ``get_pauli_obs``.
 
-    return np.sum(filtered_contributions) / num_shots
+    ``pauli`` is one observable, usually the packed array ``[k, value]``.
+    ``shots`` has shape ``(N, 2)``: packed outcome integer and probability.
+    The formula is ``sum_s p(s) (-1)^(sign(P)+Y(P)+<P,s>)``. Outcome signs
+    are ignored. Probabilities follow ``get_pauli_obs``'s normalized contract.
 
-@njit(cache=NUMBA_CACHE)
+    Float-stored outcome values must be integral and strictly below the dtype's
+    consecutive-integer limit (2**53 for float64). At that boundary a rounded
+    input cannot be distinguished from an exact integer. For larger values use
+    an object array or nested rows preserving integer outcomes and float weights.
+    """
+    observable = _as_legacy_paulis(pauli)
+    if len(observable) != 2:
+        raise ValueError("Pauli_expectation requires exactly one observable")
+    float_limit = 2 ** 53
+    if isinstance(shots, np.ndarray) and shots.dtype.kind == "f":
+        float_limit = 2 ** (np.finfo(shots.dtype).nmant + 1)
+    rows = np.asarray(shots, dtype=object)
+    if rows.ndim != 2 or rows.shape[1] != 2 or rows.shape[0] == 0:
+        raise ValueError("shots must be a nonempty array of (packed outcome, probability) rows")
+    k = int(observable[0])
+    max_value = (1 << (2 * k + 1)) - 1
+    values = np.array(
+        [_packed_shot_scalar(value, max_value, float_limit) for value in rows[:, 0]],
+        dtype=np.int64,
+    )
+    weights = _probability_weights(rows[:, 1].tolist())
+    return float(_weighted_pauli_estimates(observable[1:], values, weights, k, False)[0])
+
+
+@njit(cache=NUMBA_CACHE, nogil=True)
 def filtered_purity(generators, shots, shot_parities=None):
+    r"""Average ``(-1)^Y(s)`` over shots passing every generator's Bell filter.
+
+    A shot passes generator g when ``Y(g)+<s,g>`` is even. Packed generator
+    phase signs are ignored, as in the original filter definition. An empty
+    generator set applies no filter. Shots must be nonempty and have the same
+    declared width as the generators. Optional parities are a one-dimensional
+    0/1 array with exactly one entry per shot.
     """
-    Computes the filtered purity of some set of generators given noisy shots.
-
-    Fast JIT-compiled version that avoids Python loops and vectorization overheads.
-
-    Args:
-        generators (ndarray): ZX array of samples (ie, Pauli group element generators g∈G)
-        shots (ndarray): ZX array of the shots (ie, direct samples with the conjugate problem)
-        shot_parities (ndarray, optional): Precomputed Y parities of the shots, if available
-
-    Returns:
-        float: The computed filtered purity
-    """
-    if len(generators) <= 1 or len(shots) <= 1:
-        return 0.0
-
-    k = generators[0]
-    num_generators = len(generators) - 1
-    num_shots = len(shots) - 1
-
-    # Precompute shot parities if not provided
-    compute_shot_parities = (shot_parities is None or len(shot_parities) != num_shots)
-    if compute_shot_parities:
-        shot_parities_local = np.empty(num_shots, dtype=np.int8)
-        for i in range(num_shots):
-            shot_parities_local[i] = y_parity_int(shots[i+1], k)
-    else:
-        shot_parities_local = shot_parities
-    
-    # Precompute generator parities
-    gen_parities = np.empty(num_generators, dtype=np.int8)
-    for j in range(num_generators):
-        gen_parities[j] = y_parity_int(generators[j+1], k)
-
-    # Main computation loop - iterate over shots
-    total_purity = 0.0
-
-    for i in range(num_shots):
-        shot_val = shots[i+1]
-        shot_y_parity = shot_parities_local[i]
-
-        # Check if this shot is stabilized by ALL generators
-        is_stabilized = True
-
-        for j in range(num_generators):
-            gen_val = generators[j+1]
-            gen_y_parity = gen_parities[j]
-
-            # Compute symplectic inner product
-            inner_prod = symplectic_inner_product_int(shot_val, gen_val, k)
-
-            # Compute exponent: π_y(g) + ⟨i,g⟩
-            exponent = (gen_y_parity + inner_prod) & 1
-
-            # If exponent is 1, this generator gives -1, so shot is not stabilized
-            if exponent == 1:
-                is_stabilized = False
-                break  # Early exit - no need to check remaining generators
-
-        # Only contribute if stabilized by all generators
-        if is_stabilized:
-            # Contribution is (-1)^{π_y(shot)}
-            if shot_y_parity == 0:
-                total_purity += 1.0
-            else:
-                total_purity -= 1.0
-
-    return total_purity / num_shots
-
-@njit(cache=NUMBA_CACHE)
-def get_purity(shots):
-    """
-    Computes the purity of a set of shots.
-
-    Args:
-        shots (ndarray): ZX array of shots
-
-    Returns:
-        float: The computed purity
-    """
+    if generators.ndim != 1 or shots.ndim != 1:
+        raise ValueError("Generators and shots must be one-dimensional packed arrays")
+    _validate_legacy_array_nb(generators)
+    _validate_legacy_array_nb(shots)
+    if generators[0] != shots[0]:
+        raise ValueError("Generators and shots must have the same qubit count")
     if len(shots) <= 1:
-        raise Exception("Input is trivial. either the input is missing the qubit information at index zero, or it is an empty set being passed")
-
-    k = shots[0]
-    num_shots = len(shots) - 1
-
-    total_purity = 0.0
-
+        raise ValueError("At least one shot is required")
+    k, num_shots = shots[0], len(shots) - 1
+    if shot_parities is not None:
+        if shot_parities.ndim != 1 or len(shot_parities) != num_shots:
+            raise ValueError("shot_parities must contain exactly one parity per shot")
+        for parity in shot_parities.flat:
+            if parity != 0 and parity != 1:
+                raise ValueError("shot_parities entries must be zero or one")
+    gen_parities = np.empty(len(generators) - 1, dtype=np.int8)
+    for j in range(len(gen_parities)):
+        gen_parities[j] = y_parity_int(generators[j + 1], k)
+    total = 0.0
     for i in range(num_shots):
-        shot_val = shots[i+1]
-        shot_y_parity = y_parity_int(shot_val, k)
+        passes = True
+        for j in range(len(gen_parities)):
+            if gen_parities[j] ^ symplectic_inner_product_int(shots[i + 1], generators[j + 1], k):
+                passes = False
+                break
+        if passes:
+            parity = y_parity_int(shots[i + 1], k) if shot_parities is None else shot_parities.flat[i]
+            total += 1.0 if parity == 0 else -1.0
+    return total / num_shots
 
-        # Contribution is (-1)^{π_y(shot)}
-        shot_sign = 1 if shot_y_parity == 0 else -1
-        total_purity += shot_sign
 
-    return total_purity / num_shots
+@njit(cache=NUMBA_CACHE, nogil=True)
+def get_purity(shots):
+    """Return the Bell-shot mean of ``(-1)^Y(s)`` for nonempty packed shots."""
+    if shots.ndim != 1:
+        raise ValueError("Shots must be a one-dimensional packed array")
+    _validate_legacy_array_nb(shots)
+    if len(shots) <= 1:
+        raise ValueError("At least one shot is required")
+    total = 0.0
+    for i in range(1, len(shots)):
+        total += 1.0 if y_parity_int(shots[i], shots[0]) == 0 else -1.0
+    return total / (len(shots) - 1)
+
 
 def filtered_purity_reference(generators, shots, shot_parities=None):
-    """
-    Reference implementation of filtered purity - slow but easy to verify.
-    
-    Computes: ⟨(-1)^{π_y(i)} * ∏_{g ∈ G} δ((-1)^{π_y(g) + ⟨i,g⟩} == 1)⟩_{i ∈ S}
-    
-    Where:
-    - π_y(x) is the Y parity of Pauli string x
-    - ⟨i,g⟩ is the symplectic inner product between shot i and generator g
-    - δ(...) is 1 if condition is true, 0 otherwise
-    - The product ∏_{g ∈ G} checks if shot i is stabilized by ALL generators
-    
-    Args:
-        generators (ndarray): ZX array [k, g1, g2, ...] where k is num_qubits
-        shots (ndarray): ZX array [k, s1, s2, ...] where k is num_qubits
-        shot_parities (ndarray, optional): Precomputed Y parities of shots
-    
-    Returns:
-        float: The filtered purity value
-    """
-    if len(generators) <= 1 or len(shots) <= 1:
-        print("Trivial case: not enough generators or shots")
-        return 0.0
-    
-    k = generators[0]  # number of qubits
-    num_generators = len(generators) - 1
-    num_shots = len(shots) - 1
-    
-    print(f"Computing filtered purity for {num_generators} generators and {num_shots} shots on {k} qubits")
-    
-    # Step 1: Precompute Y parities if not provided
-    if shot_parities is None or len(shot_parities) != num_shots:
-        print("Computing shot Y parities...")
-        shot_parities = np.zeros(num_shots, dtype=np.int8)
-        for i in range(num_shots):
-            shot_pauli = np.array([k, shots[i+1]])
-            shot_parities[i] = getParity(shot_pauli, 'Y')
-            if i < 5:  # Debug first few
-                print(f"  Shot {i}: {shot_pauli} -> Y parity = {shot_parities[i]}")
-    
-    # Step 2: Precompute generator Y parities
-    print("Computing generator Y parities...")
-    gen_parities = np.zeros(num_generators, dtype=np.int8)
-    for j in range(num_generators):
-        gen_pauli = np.array([k, generators[j+1]])
-        gen_parities[j] = getParity(gen_pauli, 'Y')
-        print(f"  Generator {j}: {gen_pauli} -> Y parity = {gen_parities[j]}")
-    
-    # Step 3: For each shot, check if it's stabilized by ALL generators
-    print("\nProcessing each shot...")
-    total_purity = 0.0
-    stabilized_shots = 0
-    
-    for i in range(num_shots):
-        shot_val = shots[i+1]
-        shot_y_parity = shot_parities[i]
-        
-        print(f"\nShot {i}: value={shot_val}, Y_parity={shot_y_parity}")
-        
-        # Check stabilization by each generator
-        is_stabilized_by_all = True
-        stabilization_details = []
-        
-        for j in range(num_generators):
-            gen_val = generators[j+1]
-            gen_y_parity = gen_parities[j]
-            
-            # Compute symplectic inner product ⟨shot, generator⟩
-            inner_prod = symplectic_inner_product(
-                shot_val, 
-                gen_val, k
-            )
-            
-            # Compute the exponent for this generator: π_y(g) + ⟨i,g⟩
-            exponent = (gen_y_parity + inner_prod) % 2
-            
-            # Compute the sign: (-1)^exponent
-            sign = 1 if exponent == 0 else -1
-            
-            stabilization_details.append({
-                'generator': j,
-                'gen_val': gen_val,
-                'gen_y_parity': gen_y_parity,
-                'inner_product': inner_prod,
-                'exponent': exponent,
-                'sign': sign
-            })
-            
-            # If any generator gives sign = -1, this shot is not stabilized
-            if sign == -1:
-                is_stabilized_by_all = False
-        
-        # Print detailed stabilization info for first few shots
-        if i < 3:
-            print(f"  Stabilization details:")
-            for detail in stabilization_details:
-                print(f"    Gen {detail['generator']}: "
-                      f"⟨{shot_val},{detail['gen_val']}⟩={detail['inner_product']}, "
-                      f"exp={detail['exponent']}, sign={detail['sign']}")
-        
-        # Only include this shot if stabilized by ALL generators
-        if is_stabilized_by_all:
-            stabilized_shots += 1
-            # Contribution is (-1)^{π_y(shot)}
-            shot_sign = 1 if shot_y_parity == 0 else -1
-            total_purity += shot_sign
-            
-            if i < 3:
-                print(f"  → STABILIZED: contributing {shot_sign} to purity")
-        else:
-            if i < 3:
-                print(f"  → NOT STABILIZED: contributing 0 to purity")
-    
-    # Step 4: Compute final result
-    filtered_purity_value = total_purity / num_shots
-    
-    print(f"\nFinal Results:")
-    print(f"  Total shots: {num_shots}")
-    print(f"  Stabilized shots: {stabilized_shots}")
-    print(f"  Total purity sum: {total_purity}")
-    print(f"  Filtered purity: {total_purity}/{num_shots} = {filtered_purity_value}")
-    
-    return filtered_purity_value
+    """Quiet Python reference for the exact contract of ``filtered_purity``."""
+    if not isinstance(generators, np.ndarray) or not isinstance(shots, np.ndarray):
+        raise TypeError("Generators and shots must be one-dimensional packed arrays")
+    if generators.ndim != 1 or shots.ndim != 1:
+        raise ValueError("Generators and shots must be one-dimensional packed arrays")
+    generators = _as_legacy_paulis(generators)
+    shots = _as_legacy_paulis(shots)
+    if generators[0] != shots[0]:
+        raise ValueError("Generators and shots must have the same qubit count")
+    if len(shots) <= 1:
+        raise ValueError("At least one shot is required")
+    k, num_shots = int(shots[0]), len(shots) - 1
+    mask = (1 << k) - 1
+
+    def y_parity(value):
+        return bin((int(value) >> 1) & (int(value) >> (k + 1)) & mask).count("1") & 1
+
+    def inner(a, b):
+        za, xa = (int(a) >> 1) & mask, (int(a) >> (k + 1)) & mask
+        zb, xb = (int(b) >> 1) & mask, (int(b) >> (k + 1)) & mask
+        return bin((za & xb) ^ (xa & zb)).count("1") & 1
+
+    if shot_parities is None:
+        parities = [y_parity(s) for s in shots[1:]]
+    else:
+        parities = np.asarray(shot_parities)
+        if parities.ndim != 1 or len(parities) != num_shots:
+            raise ValueError("shot_parities must contain exactly one parity per shot")
+        if np.any((parities != 0) & (parities != 1)):
+            raise ValueError("shot_parities entries must be zero or one")
+    return sum(
+        1 if parity == 0 else -1
+        for shot, parity in zip(shots[1:], parities)
+        if all((y_parity(g) ^ inner(shot, g)) == 0 for g in generators[1:])
+    ) / num_shots

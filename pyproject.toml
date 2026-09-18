@@ -7,17 +7,19 @@ name = "paulitools"
 version = "2.0"
 description = "Efficient Pauli string manipulation and analysis"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [
     { name = "Thomas Steckmann", email = "tmsteckm@gmail.com" },
 ]
 dependencies = [
-    "numpy",
-    "numba",
-    "galois",
-    "joblib",
+    "numpy>=1.22",
+    "numba>=0.58.1",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+verification = ["pytest>=7", "galois>=0.3.7"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Tuple, Union
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 from ._numba import NUMBA_CACHE
 
@@ -21,8 +21,8 @@ MAX_STANDARD_QUBITS = 31
 
 def _required_chunks(n_qubits: int) -> int:
     """Return how many 64-bit chunks are required to store *n_qubits*."""
-    if n_qubits <= 0:
-        raise ValueError("Number of qubits must be positive")
+    if n_qubits < 0:
+        raise ValueError("Number of qubits must be nonnegative")
     return (n_qubits + _CHUNK_BITS - 1) // _CHUNK_BITS
 
 
@@ -33,8 +33,8 @@ def _required_chunks(n_qubits: int) -> int:
 
 @njit(cache=NUMBA_CACHE)
 def _required_chunks_nb(n_qubits: int) -> int:
-    if n_qubits <= 0:
-        raise ValueError("Number of qubits must be positive")
+    if n_qubits < 0:
+        raise ValueError("Number of qubits must be nonnegative")
     return (n_qubits + _CHUNK_BITS - 1) // _CHUNK_BITS
 
 
@@ -77,8 +77,9 @@ def pauli_struct_get_bits(pauli_struct, qubit_idx: int):
     return x_bit, z_bit
 
 
-@njit(cache=NUMBA_CACHE)
+@njit(cache=NUMBA_CACHE, inline="always")
 def _popcount_uint64(value: np.uint64) -> int:
+    # LLVM recognizes this unsigned clear-lowest-bit idiom as ctpop.
     count = 0
     while value != 0:
         value &= value - np.uint64(1)
@@ -159,6 +160,11 @@ class PauliInt:
             raise ValueError(
                 f"x_chunks must have shape {(chunk_count,)}, got {self.x_chunks.shape}"
             )
+        tail = self.n_qubits % _CHUNK_BITS
+        if tail:
+            unused_mask = ~((np.uint64(1) << np.uint64(tail)) - np.uint64(1))
+            if (self.z_chunks[-1] & unused_mask) or (self.x_chunks[-1] & unused_mask):
+                raise ValueError("Pauli chunks have set bits beyond the declared qubit width")
 
     @classmethod
     def zeros(cls, n_qubits: int, sign: int = 0) -> "PauliInt":
@@ -207,7 +213,7 @@ class PauliInt:
                 chars.append("Z")
             else:
                 chars.append("I")
-        pauli_body = "".join(chars) or "I"
+        pauli_body = "".join(chars)
         if include_sign:
             prefix = "-" if self.sign else "+"
             return prefix + pauli_body
@@ -284,6 +290,7 @@ def _strip_sign(pauli_str: str) -> Tuple[int, str]:
 
 def pauli_string_to_pauliint(pauli_str: str) -> PauliInt:
     sign, body = _strip_sign(pauli_str)
+    body = body.upper()
     pauli = PauliInt.zeros(len(body), sign=sign)
     for idx, char in enumerate(body):
         if char == "X":
@@ -299,11 +306,13 @@ def pauli_string_to_pauliint(pauli_str: str) -> PauliInt:
     return pauli
 
 
-def binary_row_to_pauliint(binary_row: np.ndarray) -> PauliInt:
+def binary_row_to_pauliint(binary_row: np.ndarray, *, encoding="auto") -> PauliInt:
+    from .core import _normalize_binary_entries
+
+    binary_row = np.asarray(binary_row)
     if binary_row.ndim != 1:
         raise ValueError("Binary row must be 1D")
-    if binary_row.dtype not in (np.uint8, np.int8, np.int64, np.uint64, np.bool_):
-        binary_row = binary_row.astype(np.uint8)
+    binary_row = _normalize_binary_entries(binary_row, encoding)
     if len(binary_row) % 2 != 0:
         raise ValueError("Binary ZX rows must have even length (Z|X bits)")
     n_qubits = len(binary_row) // 2
@@ -370,7 +379,9 @@ def infer_qubits(input_data: Union[str, Sequence, np.ndarray]) -> int:
             raise ValueError("Cannot infer qubits from empty input")
         first = input_data[0]
         if isinstance(first, str):
-            return infer_qubits(first)
+            if not all(isinstance(item, str) for item in input_data):
+                raise ValueError("Pauli string collections cannot mix input types")
+            return max(infer_qubits(item) for item in input_data)
         if isinstance(first, (list, tuple)):
             max_idx = 0
             for pauli, index in input_data:
@@ -381,45 +392,63 @@ def infer_qubits(input_data: Union[str, Sequence, np.ndarray]) -> int:
     raise ValueError("Unable to infer number of qubits from provided data")
 
 
-def toZX_large(input_data: Union[str, Sequence, np.ndarray]) -> PauliIntCollection:
-    n_qubits = infer_qubits(input_data)
+def toZX_large(input_data: Union[str, Sequence, np.ndarray], *, encoding="auto") -> PauliIntCollection:
+    """Parse large Paulis using the same encodings and right padding as toZX.
 
+    Numeric arrays use Z|X columns. ``bits`` and ``eigenvalues`` are explicit;
+    the legacy ``auto`` interpretation is selected once for the entire batch.
+    """
+    # Imports are deferred because core also uses these large backends.
+    from .core import _is_binary_string, _normalize_binary_entries, _prepare_pauli_char_matrix
+
+    if encoding not in {"auto", "bits", "eigenvalues"}:
+        raise ValueError("encoding must be 'auto', 'bits', or 'eigenvalues'")
     if isinstance(input_data, str):
-        pauli = pauli_string_to_pauliint(input_data)
-        return PauliIntCollection(n_qubits, [pauli])
-
-    if isinstance(input_data, np.ndarray):
-        if input_data.ndim == 1:
-            pauli = binary_row_to_pauliint(input_data)
-            return PauliIntCollection(n_qubits, [pauli])
-        if input_data.ndim == 2:
-            paulis = [binary_row_to_pauliint(row) for row in input_data]
-            return PauliIntCollection(n_qubits, paulis)
-        raise ValueError("Unsupported ndarray shape for Pauli input")
-
+        input_data = [input_data]
     if isinstance(input_data, (list, tuple)):
+        if not input_data:
+            raise ValueError("Input list is empty.")
         if all(isinstance(item, str) for item in input_data):
-            paulis = [pauli_string_to_pauliint(item) for item in input_data]
+            binary_flags = [_is_binary_string(item) for item in input_data]
+            if any(binary_flags):
+                if not all(binary_flags):
+                    raise ValueError("Cannot mix binary strings and Pauli strings")
+                width = len(input_data[0])
+                if width % 2 or any(len(item) != width for item in input_data):
+                    raise ValueError("Binary strings must have equal, even Z|X lengths")
+                bits = np.asarray([[int(ch) for ch in item] for item in input_data], dtype=np.uint8)
+                paulis = [binary_row_to_pauliint(row, encoding="bits") for row in bits]
+                return PauliIntCollection(width // 2, paulis)
+            _, _, _, n_qubits = _prepare_pauli_char_matrix(input_data)
+            paulis = []
+            for item in input_data:
+                sign, body = _strip_sign(item)
+                prefix = "-" if sign else "+"
+                paulis.append(pauli_string_to_pauliint(prefix + body.upper().ljust(n_qubits, "I")))
             return PauliIntCollection(n_qubits, paulis)
         if all(isinstance(item, np.ndarray) for item in input_data):
-            paulis = [binary_row_to_pauliint(np.asarray(item)) for item in input_data]
-            return PauliIntCollection(n_qubits, paulis)
-        if all(isinstance(item, (list, tuple)) for item in input_data):
-            pauli = PauliInt.zeros(n_qubits)
-            for pauli_char, index in input_data:
-                x_bit = 0
-                z_bit = 0
-                if pauli_char == "X":
-                    x_bit = 1
-                elif pauli_char == "Z":
-                    z_bit = 1
-                elif pauli_char == "Y":
-                    x_bit = z_bit = 1
-                elif pauli_char != "I":
-                    raise ValueError(f"Invalid Pauli character '{pauli_char}' in tuple input")
-                pauli.set_bits(int(index), x_bit=x_bit, z_bit=z_bit)
-            return PauliIntCollection(n_qubits, [pauli])
-
+            input_data = np.stack(input_data)
+        elif all(isinstance(item, (list, tuple)) for item in input_data):
+            mapping = {}
+            for char, index in input_data:
+                if not isinstance(char, str) or char.upper() not in {"I", "X", "Y", "Z"}:
+                    raise ValueError("Invalid Pauli character in tuple input")
+                if not isinstance(index, int) or index < 0:
+                    raise ValueError("Pauli tuple indices must be non-negative integers")
+                mapping[index] = char.upper()
+            n_qubits = max(mapping) + 1
+            body = ["I"] * n_qubits
+            for index, char in mapping.items():
+                body[index] = char
+            return PauliIntCollection(n_qubits, [pauli_string_to_pauliint("".join(body))])
+    if isinstance(input_data, np.ndarray):
+        if input_data.ndim == 1:
+            input_data = input_data.reshape(1, -1)
+        if input_data.ndim != 2 or input_data.shape[1] % 2:
+            raise ValueError("Binary arrays must have one or two dimensions and even Z|X width")
+        bits = _normalize_binary_entries(input_data, encoding)
+        paulis = [binary_row_to_pauliint(row, encoding="bits") for row in bits]
+        return PauliIntCollection(bits.shape[1] // 2, paulis)
     raise ValueError("Unsupported input data type for large Pauli conversion")
 
 
@@ -470,15 +499,52 @@ def commutes_any(
     return bool(commutes_struct(_ensure_pauli_struct(a), _ensure_pauli_struct(b)))
 
 
-def commutation_matrix(collection: PauliIntCollection) -> np.ndarray:
-    size = len(collection)
-    mat = np.zeros((size, size), dtype=np.int8)
-    structs = collection.as_structs()
-    for i, pauli_i in enumerate(structs):
-        for j in range(i, size):
-            value = symplectic_inner_product_struct(pauli_i, structs[j])
-            mat[i, j] = mat[j, i] = value
-    return mat
+@njit(cache=NUMBA_CACHE, nogil=True)
+def _symplectic_matrix_chunks(z_a, x_a, z_b, x_b):
+    """Rectangular batch symplectic parity over contiguous uint64 chunks."""
+    if z_a.shape != x_a.shape or z_b.shape != x_b.shape or z_a.shape[1] != z_b.shape[1]:
+        raise ValueError("Incompatible chunk matrix shapes")
+    out = np.zeros((z_a.shape[0], z_b.shape[0]), dtype=np.int8)
+    for i in range(z_a.shape[0]):
+        for j in range(z_b.shape[0]):
+            parity = 0
+            for c in range(z_a.shape[1]):
+                bits = (x_a[i, c] & z_b[j, c]) ^ (z_a[i, c] & x_b[j, c])
+                parity ^= _popcount_uint64(bits) & 1
+            out[i, j] = parity
+    return out
+
+
+@njit(cache=NUMBA_CACHE, parallel=True, nogil=True)
+def _symplectic_matrix_chunks_parallel(z_a, x_a, z_b, x_b):
+    """Parallel counterpart; each worker owns one output row."""
+    if z_a.shape != x_a.shape or z_b.shape != x_b.shape or z_a.shape[1] != z_b.shape[1]:
+        raise ValueError("Incompatible chunk matrix shapes")
+    out = np.zeros((z_a.shape[0], z_b.shape[0]), dtype=np.int8)
+    for i in prange(z_a.shape[0]):
+        for j in range(z_b.shape[0]):
+            parity = 0
+            for c in range(z_a.shape[1]):
+                bits = (x_a[i, c] & z_b[j, c]) ^ (z_a[i, c] & x_b[j, c])
+                parity ^= _popcount_uint64(bits) & 1
+            out[i, j] = parity
+    return out
+
+
+def commutation_matrix(collection: PauliIntCollection, parallel=False) -> np.ndarray:
+    """Return symplectic parity (1 anticommutes), preserving the legacy API.
+
+    Pack object storage once, then execute the entire pairwise operation in
+    compiled code. Enable parallel execution explicitly for large batches.
+    """
+    shape = (len(collection), _required_chunks(collection.n_qubits))
+    z = np.empty(shape, dtype=np.uint64)
+    x = np.empty(shape, dtype=np.uint64)
+    for i, pauli in enumerate(collection.paulis):
+        z[i] = pauli.z_chunks
+        x[i] = pauli.x_chunks
+    kernel = _symplectic_matrix_chunks_parallel if parallel else _symplectic_matrix_chunks
+    return kernel(z, x, z, x)
 
 
 def is_pauliint(obj: object) -> bool:

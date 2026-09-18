@@ -565,31 +565,20 @@ class TestCentralizer(unittest.TestCase):
             
             zx_ptgalois = toZX_pt(pauli_strings)
             
-            # Compute centralizers
-            try:
-                pt_centralizer = centralizer_pt(zx_ptgalois)
-                our_centralizer = centralizer(zx_numba)
-                #compare lengths (number of elements)
-                np.testing.assert_equal(pt_centralizer.shape[0], our_centralizer.shape[0],
-                                       err_msg=f"Trial {trial}: Centralizer sizes should match")
-                # Test that our centralizer has correct mathematical properties
-                # (exact equivalence testing is complex due to different representations)
-                
-                # Test that all elements in our centralizer commute with input group
-                rs = row_space(zx_numba)
-                for cent_elem in our_centralizer:
-                    for rs_elem in rs:
-                        k = zx_numba[0]
-                        z1, x1 = cent_elem[:k], cent_elem[k:]
-                        z2, x2 = rs_elem[:k], rs_elem[k:]
-                        symp_prod = (np.sum(z1 * x2) + np.sum(x1 * z2)) % 2
-                        self.assertEqual(symp_prod, 0, 
-                                       f"Trial {trial}: Centralizer element should commute with group element")
-                        
-            except Exception as e:
-                # Skip cases that fail in ptgalois (might be edge cases)
-                print(f"Skipping trial {trial} due to error: {e}")
-                continue
+            # Reference failures and assertion failures must fail the test.
+            pt_centralizer = centralizer_pt(zx_ptgalois)
+            our_centralizer = centralizer(zx_numba)
+            np.testing.assert_equal(pt_centralizer.shape[0], our_centralizer.shape[0],
+                                   err_msg=f"Trial {trial}: Centralizer sizes should match")
+            rs = row_space(zx_numba)
+            for cent_elem in our_centralizer:
+                for rs_elem in rs:
+                    k = zx_numba[0]
+                    z1, x1 = cent_elem[:k], cent_elem[k:]
+                    z2, x2 = rs_elem[:k], rs_elem[k:]
+                    symp_prod = (np.sum(z1 * x2) + np.sum(x1 * z2)) % 2
+                    self.assertEqual(symp_prod, 0,
+                                   f"Trial {trial}: Centralizer element should commute with group element")
 
     def test_centralizer_speed(self):
         """Test the performance of centralizer implementation"""

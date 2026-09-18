@@ -45,6 +45,7 @@ class TestToBinary(unittest.TestCase):
         ])
         output = toBinary(self.set_1)
         np.testing.assert_array_equal(output, expected)
+        self.assertTrue(output.flags.c_contiguous)
         
 
 class TestGetParity(unittest.TestCase):
@@ -107,6 +108,82 @@ class TestCompiledPurityWorkflows(unittest.TestCase):
         self.assertTrue(filtered_purity.nopython_signatures)
         self.assertTrue(get_purity.nopython_signatures)
         self.assertTrue(y_parity_int.nopython_signatures)
+
+    def test_empty_filter_matches_unfiltered_purity(self):
+        shots = toZX(["II", "YX", "XY", "ZZ", "YY"])
+        empty = np.array([2], dtype=np.int64)
+        expected = (1 - 1 - 1 + 1 + 1) / 5
+        self.assertEqual(get_purity(shots), expected)
+        self.assertEqual(filtered_purity(empty, shots), expected)
+        self.assertEqual(filtered_purity_reference(empty, shots), expected)
+
+    def test_purity_matches_independent_string_formula(self):
+        rng = np.random.default_rng(719)
+        for k in (1, 2, 7, 31):
+            for _ in range(12):
+                generators = ["".join(rng.choice(list("IXYZ"), k)) for _ in range(3)]
+                shots = ["".join(rng.choice(list("IXYZ"), k)) for _ in range(11)]
+                parities = np.array([s.count("Y") % 2 for s in shots], dtype=np.int8)
+                expected = sum(
+                    (-1) ** s.count("Y") for s in shots
+                    if all((g.count("Y") + sum(a != "I" and b != "I" and a != b for a, b in zip(s, g))) % 2 == 0 for g in generators)
+                ) / len(shots)
+                packed_g, packed_s = toZX(generators), toZX(shots)
+                self.assertEqual(filtered_purity(packed_g, packed_s), expected)
+                self.assertEqual(filtered_purity(packed_g, packed_s, parities), expected)
+                self.assertEqual(filtered_purity_reference(packed_g, packed_s, parities), expected)
+
+    def test_purity_validates_width_empty_shots_and_parities(self):
+        generators, shots = toZX(["XX"]), toZX(["II", "YY"])
+        for function in (filtered_purity, filtered_purity_reference):
+            with self.assertRaises(ValueError):
+                function(toZX(["X"]), shots)
+            with self.assertRaises(ValueError):
+                function(generators, np.array([2], dtype=np.int64))
+            for parities in (
+                np.array([], dtype=np.int8),
+                np.array([0], dtype=np.int8),
+                np.array([0, 2], dtype=np.int8),
+                np.array([0, -1], dtype=np.int8),
+                np.array([0., np.nan]),
+                np.array([[0, 1]], dtype=np.int8),
+            ):
+                with self.subTest(function=function, parities=parities):
+                    with self.assertRaises(ValueError):
+                        function(generators, shots, parities)
+        with self.assertRaises(ValueError):
+            get_purity(np.array([2], dtype=np.int64))
+
+    def test_purity_rejects_malformed_packed_inputs_before_reading(self):
+        valid = toZX(["X"])
+        for bad in (
+            np.array([], dtype=np.int64), np.array([[1, 4]], dtype=np.int64),
+            np.array([32, 0], dtype=np.int64), np.array([1, -1], dtype=np.int64),
+            np.array([1, 8], dtype=np.int64),
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    get_purity(bad)
+                with self.assertRaises(ValueError):
+                    filtered_purity(bad, valid)
+                with self.assertRaises(ValueError):
+                    filtered_purity(valid, bad)
+                with self.assertRaises(ValueError):
+                    filtered_purity_reference(bad, valid)
+                with self.assertRaises(ValueError):
+                    filtered_purity_reference(valid, bad)
+
+    def test_single_pauli_parity_validates_shape_and_basis(self):
+        with self.assertRaises(ValueError):
+            getParity(np.array([1], dtype=np.int64))
+        with self.assertRaises(ValueError):
+            getParity(toZX(["X", "Y"]))
+        with self.assertRaises(ValueError):
+            getParity(toZX("X"), basis="A")
+        with self.assertRaises(ValueError):
+            getParity(np.array([[1, 4]], dtype=np.int64))
+        with self.assertRaises(ValueError):
+            toBinary(np.array([[1, 4]], dtype=np.int64))
 
 
 class TestUtilFunctionsWithExtension(unittest.TestCase):

@@ -11,7 +11,8 @@ from .core import (
 # Import group theory functions
 from .group import (
     row_reduce, generators, null_space, inner_product, radical, centralizer,
-    differences, ingroup, row_space
+    differences, ingroup, row_space, center, ambient_centralizer,
+    stabilizer_reduce, stabilizer_reduce_bits,
 )
 
 # Import utility functions
@@ -43,12 +44,22 @@ from .zx_array import (
     toZXArray,
 )
 
+from .pauli import Pauli
+
 from .storage import (
     SerializationError,
     save_pauli_data,
     load_pauli_data,
+    load_legacy_payload,
     append_pauli_data,
     iter_pauli_records,
+)
+
+from .bell_sampling import (
+    BellFilterState, BellSamplePool, SupportBasis, SupportSampler,
+    bell_differences, cyclic_bell_differences, y_parities,
+    commuting_mask, bell_filter_mask, bell_purity, bell_filtered_purity,
+    symplectic_fwht,
 )
 
 # Define what gets imported with "from paulitools import *"
@@ -64,7 +75,8 @@ __all__ = [
     
     # Group functions
     'row_reduce', 'generators', 'null_space', 'inner_product', 'radical',
-    'centralizer', 'differences', 'ingroup', 'row_space',
+    'centralizer', 'center', 'ambient_centralizer', 'stabilizer_reduce',
+    'stabilizer_reduce_bits', 'differences', 'ingroup', 'row_space',
     
     # Utility functions
     'toBinary', 'convert_array_type', 'popcount', 'getParity',
@@ -79,8 +91,15 @@ __all__ = [
     'commutes_struct', 'commutes_pauliint', 'commutation_matrix',
 
     # Ergonomic ZX wrapper
-    'ZXArray', 'toZXArray',
+    'Pauli', 'ZXArray', 'toZXArray',
 
     # Serialization helpers
-    'SerializationError', 'save_pauli_data', 'append_pauli_data', 'load_pauli_data', 'iter_pauli_records',
+    'SerializationError', 'save_pauli_data', 'append_pauli_data', 'load_pauli_data',
+    'load_legacy_payload', 'iter_pauli_records',
+
+    # Bell-label numerics and prepared support spaces
+    'BellFilterState', 'BellSamplePool', 'SupportBasis', 'SupportSampler',
+    'bell_differences', 'cyclic_bell_differences', 'y_parities',
+    'commuting_mask', 'bell_filter_mask', 'bell_purity', 'bell_filtered_purity',
+    'symplectic_fwht',
 ]

@@ -1,8 +1,7 @@
 import numpy as np
-import unittest
-from numba import jit, types, njit, prange
-from numba.core.errors import NumbaTypeError, NumbaValueError
-from operator import ixor
+from numba import njit, prange, types
+from numba.core.errors import NumbaValueError
+from numba.extending import overload
 from numpy import int64
 
 from ._numba import NUMBA_CACHE
@@ -19,6 +18,7 @@ from .large_pauli import (
     standard_to_pauliints,
     symplectic_inner_product_any as _sip_any,
     toZX_large,
+    _popcount_uint64,
 )
 
 
@@ -35,6 +35,8 @@ def _pack_zx_bitplanes(z_bits, x_bits):
     """Pack Z and X bitplanes into legacy integer representation."""
     num_rows = z_bits.shape[0]
     length = z_bits.shape[1]
+    if length > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports at most 31 qubits; use toZX_extended")
     output = np.empty(num_rows + 1, dtype=np.int64)
     output[0] = length
     for row in range(num_rows):
@@ -52,6 +54,8 @@ def _pack_zx_bitplanes(z_bits, x_bits):
 def _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length):
     """Pack Pauli character matrix into ZX legacy integers."""
     num_rows = char_matrix.shape[0]
+    if max_length > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports at most 31 qubits; use toZX_extended")
     output = np.empty(num_rows + 1, dtype=np.int64)
     output[0] = max_length
     for row in range(num_rows):
@@ -70,8 +74,18 @@ def _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length):
     return output
 
 
-def _normalize_binary_entries(array):
+def _normalize_binary_entries(array, encoding="auto"):
     arr = np.asarray(array)
+    if encoding not in {"auto", "bits", "eigenvalues"}:
+        raise ValueError("encoding must be 'auto', 'bits', or 'eigenvalues'")
+    if encoding == "eigenvalues":
+        if np.any((arr != -1) & (arr != 1)):
+            raise ValueError("Eigenvalue inputs must contain only -1 or +1")
+        return (arr < 0).astype(np.uint8)
+    if encoding == "bits":
+        if np.any((arr != 0) & (arr != 1)):
+            raise ValueError("Bit inputs must contain only 0 or 1")
+        return arr.astype(np.uint8)
     if arr.dtype == np.bool_:
         return arr.astype(np.uint8)
 
@@ -145,6 +159,7 @@ def _fast_binary_string_to_zx(strings):
             raise ValueError("binary_string fast path received non-binary content.")
 
     half = length // 2
+    _validate_legacy_width(half)
     total_bits = len(strings_iterable) * length
     bits = np.fromiter(
         (1 if ch == '1' else 0 for s in strings_iterable for ch in s),
@@ -164,21 +179,24 @@ def _fast_eigen_z_to_zx(array):
     if arr.shape[1] == 0:
         raise ValueError("eigen_z input must have at least one column.")
 
-    z_bits = (arr < 0).astype(np.uint8)
+    _validate_legacy_width(arr.shape[1])
+    z_bits = _normalize_binary_entries(arr, encoding="eigenvalues")
     x_bits = np.zeros_like(z_bits, dtype=np.uint8)
     return _pack_zx_bitplanes(z_bits, x_bits).astype(GLOBAL_INTEGER)
 
 
-def _handle_binary_array_input(array):
+def _handle_binary_array_input(array, encoding="auto"):
     arr = np.asarray(array)
     if arr.ndim == 1:
         if arr.size % 2 != 0:
             raise ValueError(f"Binary array length {arr.size} must be even (Z|X format)")
-        normalized = _normalize_binary_entries(arr).reshape(1, -1)
+        _validate_legacy_width(arr.size // 2)
+        normalized = _normalize_binary_entries(arr, encoding).reshape(1, -1)
     elif arr.ndim == 2:
         if arr.shape[1] % 2 != 0:
             raise ValueError(f"Binary array width {arr.shape[1]} must be even (Z|X format)")
-        normalized = _normalize_binary_entries(arr)
+        _validate_legacy_width(arr.shape[1] // 2)
+        normalized = _normalize_binary_entries(arr, encoding)
     else:
         raise ValueError("NumPy array input must be 1D or 2D")
 
@@ -197,7 +215,12 @@ def _tozx_fast_path(input_data, fast_input_type):
 def _is_binary_string(value):
     return isinstance(value, str) and all(ch in {'0', '1'} for ch in value)
 
-def toZX(input_data, fast_input_type=None):
+def _validate_legacy_width(length):
+    if length < 0 or length > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports 0 through 31 qubits; use toZX_extended")
+
+
+def toZX(input_data, fast_input_type=None, *, encoding="auto"):
     """
     Convert different forms of Pauli string representations to an efficient integer representation.
 
@@ -213,12 +236,21 @@ def toZX(input_data, fast_input_type=None):
             Supported values:
             - ``"binary_string"``: `input_data` is a binary string or list thereof in Z|X format.
             - ``"eigen_z"``: `input_data` is a ±1 array where -1 -> 1 (Z bit set) and +1 -> 0.
+        encoding (str): Numeric Z|X array encoding: ``bits`` validates 0/1;
+            ``eigenvalues`` validates ±1 and maps -1 to 1. The compatibility
+            default ``auto`` treats the entire array as eigenvalue notation
+            when any -1 is present, and as bits otherwise. Explicit encoding
+            avoids batch-dependent interpretation of all-+1 rows.
 
     Returns:
         np.ndarray: ZX legacy representation (first element = number of qubits).
     """
 
+    if encoding not in {"auto", "bits", "eigenvalues"}:
+        raise ValueError("encoding must be 'auto', 'bits', or 'eigenvalues'")
     if fast_input_type is not None:
+        if encoding != "auto":
+            raise ValueError("Specify either fast_input_type or encoding, not both")
         return _tozx_fast_path(input_data, fast_input_type)
 
     if not isinstance(input_data, (str, list, tuple, np.ndarray)):
@@ -227,12 +259,13 @@ def toZX(input_data, fast_input_type=None):
         )
 
     if isinstance(input_data, np.ndarray):
-        return _handle_binary_array_input(input_data)
+        return _handle_binary_array_input(input_data, encoding)
 
     if isinstance(input_data, str):
         if _is_binary_string(input_data):
             return _fast_binary_string_to_zx(input_data)
         char_matrix, lengths, sign_bits, max_length = _prepare_pauli_char_matrix([input_data])
+        _validate_legacy_width(max_length)
         return _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length).astype(GLOBAL_INTEGER)
 
     if isinstance(input_data, tuple):
@@ -251,6 +284,7 @@ def toZX(input_data, fast_input_type=None):
                     "Input list/tuple contains invalid characters. Only 'X', 'Y', 'Z', 'I', '+', '-' or '0', '1' are allowed."
                 )
             char_matrix, lengths, sign_bits, max_length = _prepare_pauli_char_matrix(input_data)
+            _validate_legacy_width(max_length)
             return _pack_pauli_char_matrix(char_matrix, lengths, sign_bits, max_length).astype(GLOBAL_INTEGER)
 
         if all(isinstance(item, tuple) for item in input_data):
@@ -273,7 +307,7 @@ def toZX(input_data, fast_input_type=None):
             pauli_str = ['I'] * num_qubits
             for idx, value in pauli_map.items():
                 pauli_str[idx] = value
-            return toZX(''.join(pauli_str))
+            return toZX(''.join(pauli_str), encoding=encoding)
 
         raise ValueError("Unsupported input data type in list/tuple. Must be Pauli strings or tuples.")
 
@@ -326,7 +360,7 @@ def toString(integer_rep):
     return output
 
 
-@njit()
+@njit(cache=NUMBA_CACHE)
 def right_pad(sym_form, target_length):
     """
     Right pad the symplectic form to the target length.
@@ -339,7 +373,12 @@ def right_pad(sym_form, target_length):
     Returns:
         tuple: Padded symplectic form.
     """
+    if sym_form.ndim != 1:
+        raise ValueError("Packed ZX must be a one-dimensional integer array")
+    _validate_legacy_array_nb(sym_form)
     length = sym_form[0]  # Extract the length of the symplectic form
+    if length < 0 or length > MAX_STANDARD_QUBITS or target_length < 0 or target_length > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX padding supports 0 through 31 qubits")
     int_rep = sym_form[1:]  # Extract the integer representation of the symplectic form
 
     # If the current length is already greater than or equal to the target length, return the original symplectic form
@@ -355,6 +394,8 @@ def right_pad(sym_form, target_length):
     # The first element will be the new length, and the rest will be the padded integer representation
     padded_output = np.zeros(count + 1, dtype=GLOBAL_INTEGER)
     padded_output[0] = target_length  # Set the new length
+    for j in range(count):
+        padded_output[j + 1] = int_rep[j] & 1
 
     # Iterate over each bit position in the original length
     for i in prange(length):
@@ -375,10 +416,7 @@ def right_pad(sym_form, target_length):
 
     return padded_output
 
-#@jit(nopython=True)
-#1D list of tuples(int, int_array) --> tuple(int, int_array)
-#@jit(types.Tuple((int64, types.Array(int64, 1,'C')))(types.List(types.Tuple((int64, types.Array(int64, 1,'C')))),), nopython=True)
-@njit()
+@njit(cache=NUMBA_CACHE)
 def append(sym_forms):
     """
     Concatenate a list of symplectic forms by right padding everything that's smaller than the maximum length.
@@ -393,6 +431,7 @@ def append(sym_forms):
         raise NumbaValueError("Input list is empty.")
     
     if len(sym_forms) == 1:
+        _validate_legacy_array_nb(sym_forms[0])
         return sym_forms[0]
     
     #Iterates through and gets the largest length to pad to
@@ -400,6 +439,7 @@ def append(sym_forms):
     total_count = 0
     #Tracks the total number of elements and the maximum string length
     for sym_form in sym_forms:
+        _validate_legacy_array_nb(sym_form)
         if sym_form[0] > max_length:
             max_length = sym_form[0]
         total_count += len(sym_form[1:])
@@ -430,6 +470,10 @@ def left_pad(sym_form, result_size):
     Returns:
         tuple: Left padded symplectic form
     """
+    if not isinstance(sym_form, np.ndarray) or sym_form.ndim != 1:
+        raise ValueError("Packed ZX must be a one-dimensional integer array")
+    _validate_legacy_array_nb(sym_form)
+    _validate_legacy_width(result_size)
     assert sym_form[0] <= result_size, 'Cannot left pad to a smaller size'
     if sym_form[0] == result_size:
         return sym_form
@@ -452,72 +496,110 @@ def left_pad(sym_form, result_size):
             if (val >> (i + 1)) & 1:
                 padded_form[j + 1] |= 1 << (i + 1 + shift_amount)
             if (val >> (i + 1 + length)) & 1:
-                padded_form[j + 1] |= 1 << (i + 1 + result_size)
+                padded_form[j + 1] |= 1 << (i + 1 + result_size + shift_amount)
     
     return padded_form
 
 
-@njit()
+@njit(cache=NUMBA_CACHE)
+def _validate_legacy_array_nb(data):
+    """Validate the integer-array ABI once at a public compiled boundary."""
+    if data.ndim != 1 or data.size == 0:
+        raise ValueError("Packed ZX must be a nonempty one-dimensional integer array")
+    k = data[0]
+    if k < 0 or k > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports 0 through 31 qubits")
+    limit = np.uint64(1) << np.uint64(2 * k + 1)
+    for i in range(1, data.size):
+        if data[i] < 0 or np.uint64(data[i]) >= limit:
+            raise ValueError("Packed operator has bits outside its declared qubit width")
+
+
+@njit(cache=NUMBA_CACHE, inline="always")
+def _symplectic_inner_product_int_unchecked(int_rep1, int_rep2, length):
+    """Packed parity after a caller has validated the width and representation.
+
+    Keep raising guards outside batch loops: inlining a guard with an exception
+    into prange prevents Numba from parallelizing its output-row loop.
+    """
+    mask = (np.uint64(1) << np.uint64(length)) - np.uint64(1)
+    a = np.uint64(int_rep1) >> np.uint64(1)
+    b = np.uint64(int_rep2) >> np.uint64(1)
+    az = a & mask
+    bz = b & mask
+    ax = (a >> np.uint64(length)) & mask
+    bx = (b >> np.uint64(length)) & mask
+    return np.int8(_popcount_uint64((ax & bz) ^ (az & bx)) & 1)
+
+
+@njit(cache=NUMBA_CACHE, inline="always")
 def symplectic_inner_product_int(int_rep1, int_rep2, length):
-    """
-    Compute the symplectic inner product between two integer representations of Pauli strings of the same length.
-    
-    Args:
-        int_rep1 (int): First integer representation.
-        int_rep2 (int): Second integer representation.
-        length (int): The length of the Pauli strings.
-    
-    Returns:
-        int: Symplectic inner product (0 or 1).
-    """
-    product = np.int8(0)
-    for i in prange(length):
-        x1 = (int_rep1 >> (i + 1 + length)) & 1
-        z1 = (int_rep1 >> (i + 1)) & 1
-        x2 = (int_rep2 >> (i + 1 + length)) & 1
-        z2 = (int_rep2 >> (i + 1)) & 1
-        product = ixor(product, (x1 * z2) ^ (z1 * x2))
-    return product
+    """Return symplectic parity using unsigned packed words and LLVM ctpop."""
+    if length < 0 or length > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports 0 through 31 qubits")
+    return _symplectic_inner_product_int_unchecked(int_rep1, int_rep2, length)
 
 
 @njit(cache=NUMBA_CACHE)
-def symplectic_inner_product(sym_form1, sym_form2, k):
-    """
-    Compute the symplectic inner product between two symplectic forms. Wrapper for symplectic_inner_product_int, cleans up the symplectic form structure and length comparisons
-
-    Args:
-        sym_form1 (tuple): First symplectic form as a tuple (length, integer representation).
-        sym_form2 (tuple): Second symplectic form as a tuple (length, integer representation).
-    
-    Returns:
-        int: Symplectic inner product.
-    """
-    if k is not None:
-        length1 = length2 = k
-        int_rep1 = sym_form1
-        int_rep2 = sym_form2
-        return symplectic_inner_product_int(int_rep1, int_rep2, k)
-    else:
-        length1 = sym_form1[0]
-        int_rep1 = sym_form1[1]
-        length2 = sym_form2[0]
-        int_rep2 = sym_form2[1]
-    
-    # Pad the shorter form to match the length of the longer form
+def _symplectic_inner_product_zx_nb(sym_form1, sym_form2):
+    if sym_form1.ndim != 1 or sym_form2.ndim != 1:
+        raise ValueError("Single-Pauli inputs must be one-dimensional packed arrays")
+    _validate_legacy_array_nb(sym_form1)
+    _validate_legacy_array_nb(sym_form2)
+    if len(sym_form1) != 2 or len(sym_form2) != 2:
+        raise ValueError("Each input must contain exactly one packed Pauli")
+    length1, length2 = sym_form1.flat[0], sym_form2.flat[0]
+    int_rep1, int_rep2 = sym_form1.flat[1], sym_form2.flat[1]
     if length1 < length2:
-        sym_form1 = right_pad(sym_form1, length2)
-        length1 = sym_form1[0]
-        int_rep1 = sym_form1[1]
+        int_rep1 = right_pad(np.array([length1, int_rep1]), length2)[1]
     elif length2 < length1:
-        sym_form2 = right_pad(sym_form2, length1)
-        length2 = sym_form2[0]
-        int_rep2 = sym_form2[1]
-    
-    return symplectic_inner_product_int(int_rep1, int_rep2, length1)
+        int_rep2 = right_pad(np.array([length2, int_rep2]), length1)[1]
+    return symplectic_inner_product_int(int_rep1, int_rep2, max(length1, length2))
+
+
+def _symplectic_inner_product_dispatch(sym_form1, sym_form2, k):
+    """Compile-time scalar/array dispatch used by the public njit wrapper."""
+    if k is None:
+        return _symplectic_inner_product_zx_nb(sym_form1, sym_form2)
+    return symplectic_inner_product_int(sym_form1, sym_form2, k)
+
+
+@overload(_symplectic_inner_product_dispatch)
+def _overload_symplectic_inner_product_dispatch(sym_form1, sym_form2, k):
+    # Numba versions supporting this package need type-level dispatch to avoid
+    # typing ndarray-only validation in the explicit scalar-k specialization.
+    if isinstance(k, types.NoneType) or (isinstance(k, types.Omitted) and k.value is None):
+        def array_impl(sym_form1, sym_form2, k):
+            return _symplectic_inner_product_zx_nb(sym_form1, sym_form2)
+        return array_impl
+
+    def scalar_impl(sym_form1, sym_form2, k):
+        return symplectic_inner_product_int(sym_form1, sym_form2, k)
+    return scalar_impl
+
+
+@njit(cache=NUMBA_CACHE)
+def symplectic_inner_product(sym_form1, sym_form2, k=None):
+    """Compute the symplectic product of two single packed operators.
+
+    With explicit ``k``, inputs are packed scalar integers. Otherwise each input
+    must be a length-prefixed array containing exactly one operator; the legacy
+    API right-pads the shorter width before comparing.
+    """
+    return _symplectic_inner_product_dispatch(sym_form1, sym_form2, k)
+
 
 @njit(cache=NUMBA_CACHE)
 def _commutes_zx_nb(sym_form1, sym_form2):
-    return np.int8(symplectic_inner_product(sym_form1, sym_form2, None) == 0)
+    if sym_form1.ndim != 1 or sym_form2.ndim != 1:
+        raise ValueError("Packed ZX must be a one-dimensional integer array")
+    _validate_legacy_array_nb(sym_form1)
+    _validate_legacy_array_nb(sym_form2)
+    if len(sym_form1) < 2 or len(sym_form2) < 2:
+        raise ValueError("Each input must contain at least one packed Pauli")
+    # Preserve the legacy first-operator convention explicitly. Batch callers
+    # should use the pairwise matrix APIs instead.
+    return np.int8(_symplectic_inner_product_zx_nb(sym_form1[:2], sym_form2[:2]) == 0)
 
 @njit(cache=NUMBA_CACHE)
 def _commutes_int_nb(int_sym_form1, int_sym_form2, length):
@@ -527,6 +609,12 @@ def _commutes_int_nb(int_sym_form1, int_sym_form2, length):
 def commutes(sym_form1, sym_form2, length=None):
     """
     Determine whether two Pauli operators commute.
+
+    With ``length=None``, validate both packed arrays and compare their first
+    operators, preserving the historical behavior for multi-operator inputs.
+    The shorter operator is implicitly right-padded. Use ``bsip_array`` or
+    ``commute_array_fast`` to compare a whole batch. With explicit ``length``,
+    inputs are packed scalar integers.
     """
     if length is None:
         return bool(_commutes_zx_nb(sym_form1, sym_form2))
@@ -539,29 +627,42 @@ def commutes(sym_form1, sym_form2, length=None):
     )
 
 
-def bsip_array(sym_form_input):
-    """Computes the commutation matrix for a list of symplectic forms
-    
-    Args:
-        sym_form_input (array): array containing all the symplectic forms
-    
-    Returns:
-        array: commutation matrix
+@njit(cache=NUMBA_CACHE, parallel=True, nogil=True)
+def _bsip_array_parallel(sym_form_input):
+    n = sym_form_input.size - 1
+    k = sym_form_input[0]
+    result = np.empty((n, n), dtype=np.int8)
+    # Each worker owns an entire output row; no cross-row writes.
+    for i in prange(n):
+        for j in range(n):
+            result[i, j] = _symplectic_inner_product_int_unchecked(
+                sym_form_input[i + 1], sym_form_input[j + 1], k)
+    return result
+
+
+@njit(cache=NUMBA_CACHE, nogil=True)
+def bsip_array(sym_form_input, parallel=False):
+    """Pairwise symplectic parity: 1 anticommutes, 0 commutes.
+
+    The optional parallel path is useful for large batches; the serial path
+    avoids thread-launch overhead for the small default workload.
     """
-    n = len(sym_form_input)-1
-    length = sym_form_input[0]
-    commutation_matrix = np.zeros((n,n), dtype=np.int8)
+    _validate_legacy_array_nb(sym_form_input)
+    if parallel:
+        return _bsip_array_parallel(sym_form_input)
+    n = sym_form_input.size - 1
+    k = sym_form_input[0]
+    result = np.zeros((n, n), dtype=np.int8)
     for i in range(n):
-        for j in range(i,n):
-            p1 = sym_form_input[i+1]
-            p2 = sym_form_input[j+1]
-            commutation_matrix[i,j] = symplectic_inner_product_int(p1, p2, length=length)
-            commutation_matrix[j,i] = commutation_matrix[i,j]
-    return commutation_matrix
+        for j in range(i + 1, n):
+            value = _symplectic_inner_product_int_unchecked(
+                sym_form_input[i + 1], sym_form_input[j + 1], k)
+            result[i, j] = value
+            result[j, i] = value
+    return result
 
 
-import numpy as np
-@njit()
+@njit(cache=NUMBA_CACHE)
 def unpack_sym_forms_to_matrices(sym_form_input):
     """
     Converts a list of (length, integer) symplectic forms into Z and X bit matrices.
@@ -576,8 +677,9 @@ def unpack_sym_forms_to_matrices(sym_form_input):
     if num_operators == 0:
         return np.zeros((0, 0), dtype=np.uint8), np.zeros((0, 0), dtype=np.uint8)
 
-    # Assume the number of qubits is consistent and defined by the first element
     num_qubits = sym_form_input[0][0]
+    if num_qubits < 0 or num_qubits > MAX_STANDARD_QUBITS:
+        raise ValueError("Legacy ZX supports 0 through 31 qubits")
 
     # Pre-allocate matrices for performance - use uint8 here, convert later for matmul
     x_matrix = np.zeros((num_operators, num_qubits), dtype=np.uint8)
@@ -586,7 +688,14 @@ def unpack_sym_forms_to_matrices(sym_form_input):
     # This single loop unpacks the data; it's much faster than the previous N^2 loop.
     for i in range(num_operators):
         length, int_rep_array = sym_form_input[i]
-        int_rep = int_rep_array[0]  # Extract the integer from the array
+        if length != num_qubits:
+            raise ValueError("All rows must have the same qubit count")
+        if int_rep_array.ndim != 1 or int_rep_array.size == 0:
+            raise ValueError("Each row must contain a nonempty one-dimensional packed array")
+        int_rep = int_rep_array.flat[0]
+        limit = np.uint64(1) << np.uint64(2 * length + 1)
+        if int_rep < 0 or np.uint64(int_rep) >= limit:
+            raise ValueError("Packed operator has bits outside its declared qubit width")
         if length > 0:
             for qubit_idx in range(length):
                 # Use bit-shifting to extract X and Z parts for each operator
@@ -597,42 +706,17 @@ def unpack_sym_forms_to_matrices(sym_form_input):
             
     return x_matrix, z_matrix
 
-@njit()
-def commute_array_fast(sym_form_input):
+@njit(cache=NUMBA_CACHE, nogil=True)
+def commute_array_fast(sym_form_input, parallel=False):
+    """Pairwise commutation: 1 commutes, 0 anticommutes.
+
+    Uses packed compiled parity kernels rather than unsupported integer BLAS.
     """
-    Computes the commutation matrix for a list of symplectic forms using vectorization.
-
-    Args:
-        sym_form_input (np.ndarray): Array containing all the symplectic forms [length, int1, int2, ...]
-
-    Returns:
-        np.ndarray: The (N, N) commutation matrix where 1 means commute, 0 means anti-commute.
-    """
-    # Convert numpy array format to list of tuples format for unpack_sym_forms_to_matrices
-    length = sym_form_input[0]
-    n_operators = len(sym_form_input) - 1
-    
-    # Create list of tuples in the format (length, [int_representation])
-    sym_form_list = []
-    for i in range(1, len(sym_form_input)):
-        # Each operator needs to be a tuple (length, array_with_single_int)
-        sym_form_list.append((length, np.array([sym_form_input[i]])))
-    
-    # 1. Unpack the integer representations into a standard NumPy bit-array format.
-    x_matrix, z_matrix = unpack_sym_forms_to_matrices(sym_form_list)
-
-    # 2. Convert to int64 for matrix operations (Numba requirement)
-    x_matrix_int = x_matrix.astype(np.int64)
-    z_matrix_int = z_matrix.astype(np.int64)
-
-    # 3. Compute the symplectic inner product for all pairs using matrix multiplication.
-    # Use np.dot instead of @ operator for Numba compatibility
-    inner_product_matrix = (np.dot(x_matrix_int, z_matrix_int.T) + np.dot(z_matrix_int, x_matrix_int.T)) % 2
-    
-    # 4. Invert the bits to match the `commutes` function behavior (1 for commute).
-    commutation_matrix = 1 - inner_product_matrix
-    
-    return commutation_matrix.astype(GLOBAL_INTEGER)
+    result = bsip_array(sym_form_input, parallel).astype(GLOBAL_INTEGER)
+    for i in range(result.shape[0]):
+        for j in range(result.shape[1]):
+            result[i, j] = 1 - result[i, j]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +733,7 @@ def _should_use_large_representation(input_data, force_large: bool = False) -> b
     return n_qubits > MAX_STANDARD_QUBITS
 
 
-def toZX_extended(input_data, force_large: bool = False):
+def toZX_extended(input_data, force_large: bool = False, *, encoding="auto"):
     """Extended variant of :func:`toZX` that supports 64+ qubit systems.
 
     When the number of qubits exceeds :data:`MAX_STANDARD_QUBITS` (31) the legacy
@@ -664,11 +748,11 @@ def toZX_extended(input_data, force_large: bool = False):
         # For forced conversion on small instances we reuse the legacy
         # conversion to preserve sign handling before upgrading to PauliInt.
         if force_large and not _should_use_large_representation(input_data):
-            legacy = toZX(input_data)
+            legacy = toZX(input_data, encoding=encoding)
             return standard_to_pauliints(legacy)
-        return toZX_large(input_data)
+        return toZX_large(input_data, encoding=encoding)
 
-    legacy_result = toZX(input_data)
+    legacy_result = toZX(input_data, encoding=encoding)
     if int(legacy_result[0]) > MAX_STANDARD_QUBITS:
         return standard_to_pauliints(legacy_result)
     return legacy_result

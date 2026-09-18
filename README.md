@@ -1,226 +1,290 @@
 # PauliTools
 
-PauliTools is a Python library for fast manipulation and analysis of Pauli
-strings. It uses binary symplectic representations, Numba-compiled kernels,
-and a large-operator backend for stabilizer, commutation, and expectation-value
-workflows.
+PauliTools provides width-aware Pauli objects backed by packed integers and
+Numba-compiled batch kernels. It supports exact discrete phases, commutation,
+GF(2) support spaces, signed stabilizers, and checksummed storage.
+
+Bell-label numerics live in `src/paulitools/bell_sampling/`: paired differences,
+streaming filters, reusable sample pools, prepared subspaces and samplers, and
+a symplectic Walsh-Hadamard transform. See the [Bell sampling API](docs/BELL_SAMPLING.md)
+and [Robels migration guide](docs/ROBELS_MIGRATION.md) for the complete contracts.
 
 ## Installation
 
-From a checkout of this repository:
+Python 3.9 or newer is required. The runtime dependencies are NumPy and Numba.
+Galois is an optional verification dependency; Joblib is no longer needed.
 
 ```bash
-python -m pip install -e .
-```
-
-The project metadata installs NumPy, Numba, `galois`, and Joblib. Joblib is
-used by the parallel expectation helpers, while `galois` is required by
-`getCentralizer`.
-
-Run the test suite from the repository root with:
-
-```bash
+python -m pip install -e '.[test]'
 python -m pytest
+# Optional independent finite-field comparisons:
+python -m pip install -e '.[verification]'
 ```
 
-## Quick start
+Some older comparison tests additionally use the separate `ptgalois` package
+and skip when it is unavailable. The main correctness tests use explicit
+GF(2) calculations and independent operator matrices.
+
+## Bell sampling
 
 ```python
+import numpy as np
 from paulitools import (
-    append_pauli_data,
-    centralizer,
-    load_pauli_data,
-    row_reduce,
-    save_pauli_data,
-    toString,
-    toZX,
+    ZXArray, SupportBasis, BellSamplePool, bell_differences, commuting_mask,
 )
 
-# Parse Pauli strings into the packed legacy representation.
-generators = toZX(["XX", "YY", "ZZ"])
+# Small label examples; real experiments must establish stream independence.
+left = ZXArray.from_input(["II", "XI", "ZZ"])
+right = ZXArray.from_input(["ZI", "II", "IZ"])
+differences = bell_differences(left, right)
+radical = differences.center()  # center within the observed support span
 
-# Run compiled symplectic/group-theory operations.
-reduced = row_reduce(generators)
-center = centralizer(generators)
-print(toString(reduced))
-print(toString(center))
+pool = BellSamplePool(left)     # copies chunks and caches Y parities once
+current = pool.filter([])
+proposal = current.extend("ZI") # new state; caller decides whether to accept
+ordinary_mask = commuting_mask(left, "ZI")
 
-# Save and append batches without rewriting the existing records.
-save_pauli_data("stabilizers.ptstore", generators)
-append_pauli_data("stabilizers.ptstore", toZX(["XI", "IZ"]))
-restored = load_pauli_data("stabilizers.ptstore")
+R = SupportBasis(["ZI", "IZ"])
+sampler = R.sampler(exclude_span=SupportBasis("ZI"))
+draws = sampler.sample(10, rng=np.random.default_rng(7))
+assert R.contains(draws).all()
 ```
 
-All of the main public entry points are re-exported from `paulitools`, so
-consumers do not need to import the implementation modules directly.
+Bell filtering uses `<sample, generator> == Y(generator)`; ordinary commutation
+filtering uses zero on the right. Filtered purity divides by the original pool
+size. Both ignore global phases. Experimental provenance, adaptive-verifier
+guarantees, and acceptance policies stay in the consumer. Prepared samplers
+reuse the exclusion decomposition for repeated draws from `R \\ S`.
 
-## Representations
-
-PauliTools has two interoperable representations:
-
-| Representation | Use | Conversion |
-| --- | --- | --- |
-| Legacy packed `numpy.ndarray` | Fast Numba kernels and systems up to 31 qubits | `toZX(...)` |
-| `PauliInt` / `PauliIntCollection` | Operators larger than 31 qubits and chunked storage | `toZX_extended(...)` or `toZX_large(...)` |
-
-The legacy array stores the qubit count in element `0`. Each following `int64`
-packs the phase sign, Z bits, and X bits. The binary input convention is
-`Z|X`: a row of length `2 * n_qubits` contains all Z bits followed by all X
-bits.
-
-`toZX_extended` selects the legacy representation for systems up to
-`MAX_STANDARD_QUBITS` (31) and returns a `PauliIntCollection` for larger
-systems. Pass `force_large=True` to use the large backend for a small system
-when backend-independent code or testing requires it.
+## Objects carry width and phase
 
 ```python
-from paulitools import (
-    PauliIntCollection,
-    commutation_matrix,
-    symplectic_inner_product_extended,
-    toString_extended,
-    toZX_extended,
-)
+from paulitools import Pauli, ZXArray, toZXArray
 
-large = toZX_extended("X" * 64)
-assert isinstance(large, PauliIntCollection)
-print(toString_extended(large))
+x = Pauli("X")
+y = Pauli("Y")
+assert str(x @ y) == "+iZ"
+assert str(y @ x) == "-iZ"
+assert x.n_qubits == 1
+assert not x.commutes(y)
+assert Pauli("-X").equiv(x)       # deliberately ignores phase
+assert Pauli("-X") != x          # equality includes phase
 
-x0 = toZX_extended("X" + "I" * 63)
-z0 = toZX_extended("Z" + "I" * 63)
-print(symplectic_inner_product_extended(x0, z0))  # 1
-print(commutation_matrix(toZX_extended(["XX", "YY"], force_large=True)))
+paulis = toZXArray(["XX", "-iZI"])
+selected = paulis[1]             # independent Pauli, including width and phase
+selected.phase = 2
+paulis[1] = selected             # write back explicitly
+assert paulis.to_strings() == ["+XX", "-ZI"]
+
+# Identity allocation and bit access work with either storage backend.
+large = ZXArray.identities(65, count=2)
+large.set_bits(0, 64, x_bit=1)
+assert large.n_qubits == 65
 ```
 
-## Mutable `ZXArray` wrapper
+Phase `q` means `i**q` multiplying a tensor product of ordinary Hermitian
+I/X/Y/Z matrices: 0, 1, 2, 3 denote +1, +i, -1, -i. Labels accept `+`, `-`,
+`+i`, and `-i` prefixes. Use uppercase Pauli letters to avoid ambiguity:
+`"-iX"` means minus-i times X, while `"-IX"` means minus I tensor X.
+Bare `"iX"` is accepted; lowercase `"ix"` retains the meaning IX.
+When migrating old signed lowercase labels, uppercase the Pauli letters first:
+`toZXArray("-ix")` now denotes one-qubit -iX, whereas the old wrapper and the
+legacy `toZX("-ix")` interpret it as two-qubit -IX. Use `"-IX"` for the latter.
 
-`ZXArray` is the ergonomic, mutable boundary for both backends. It supports
-construction from strings, raw packed arrays, binary bit matrices, and
-`PauliIntCollection` objects. Use `.legacy_array()` explicitly when passing a
-legacy-backed value to a Numba kernel.
+Qubit zero is the **leftmost character** of a label. Numeric matrices use
+`Z|X` column order. Collections share one width and reject implicit resizing.
+Use `Pauli("X", n_qubits=3)`, `toZXArray(["X", "YY"], n_qubits=3)`, or
+`.pad(3, side="right")` to request identity padding explicitly. Padding on the
+left is also supported. Empty collections require a declared width through
+`ZXArray.empty(n_qubits)`; zero-qubit operators are supported.
+
+Numeric object inputs are 0/1 bits by default. Eigenvalues require an explicit
+encoding, so an all-ones row has an unambiguous meaning:
 
 ```python
-from paulitools import ZXArray, toZXArray
+import numpy as np
 
-paulis = toZXArray(["XX", "-ZI"])
-paulis.set_bits(0, 0, z_bit=1, x_bit=0)
-paulis.set_sign(1, 1)
-paulis.append("YY")
-
-print(paulis.to_strings())       # ['+ZX', '-ZI', '+YY']
-print(paulis.binary())           # Z|X bit matrix
-print(paulis.legacy_array())     # packed array for row_reduce/centralizer
-
-# The same wrapper can hold arbitrarily large operators.
-large = ZXArray.identities(64, count=2)
-large.set_bits(0, 0, x_bit=1)
-print(large.backend, large.to_strings()[0])
+assert str(Pauli(np.array([1, 1]))) == "+Y"
+assert str(Pauli(np.array([1, 1]), encoding="eigenvalues")) == "+I"
+a = ZXArray.from_bits([[0, 1]], [[1, 0]], phases=[3])
+b = ZXArray.from_eigenvalues([[1, -1]], [[-1, 1]], phases=[3])
+assert a == b
 ```
 
-Useful constructors and accessors include:
+`.binary()`, `.z_bits()`, and `.x_bits()` return support bits; `.phases()`
+returns the corresponding phase exponents. `.signs()` is limited to real
+phases. Indexing and slicing return copies; assignment, `.set_bits()`,
+`.set_phase()`, `.append()`, and `.extend()` mutate a collection.
 
-- `ZXArray.empty(n_qubits)` and `ZXArray.identities(n_qubits, count=...)`
-- `ZXArray.from_bits(z_bits, x_bits, signs=...)`
-- `toZXArray(input_data, force_large=False)`
-- `.z_bits()`, `.x_bits()`, `.binary()`, `.signs()`, and `.to_strings()`
-- `.get_bits()`, `.set_bits()`, `.set_sign()`, `.set_pauli()`, `.append()`, and `.extend()`
-- `.commutes(other)` and `.symplectic_inner_product(other)` for single-Pauli wrappers
+## Batch algebra and compiled interoperability
 
-## Core operations
+`@` performs an ordered Pauli product row by row, broadcasting a single
+operator on either side. Widths must match. `.symplectic_matrix(other=None)`
+returns a rectangular uint8 matrix with 1 meaning **anticommutes**;
+`.commutation_matrix(other=None)` returns booleans with True meaning
+**commutes**. Both accept `parallel=True` for compiled row parallelism.
 
-The most commonly used conversion and symplectic functions are:
+Objects are Python interfaces to numeric storage. Convert once outside a
+repeated compiled workflow:
 
-| Function | Purpose |
+```python
+from paulitools import row_reduce, toZX
+
+operators = toZXArray(["XX", "ZZ"])
+raw = operators.legacy_array(copy=False)  # explicit alias, real phases only
+basis = row_reduce(raw)                  # existing compiled API
+assert np.array_equal(raw, toZX(["XX", "ZZ"]))
+
+# General phase-aware kernel buffers, independent of the source object:
+n_qubits, z_chunks, x_chunks, phases = operators.kernel_args()
+```
+
+The legacy ABI is an `int64` vector `[n_qubits, packed_operator, ...]`. Bit 0
+of each packed value is the real sign; bits 1..n encode Z and bits n+1..2n
+encode X. It supports at most 31 qubits. Larger objects use 64-bit chunks.
+`force_large=True` selects chunks for smaller systems as well.
+
+`ZXArray.from_raw(raw, copy=False)` explicitly wraps a packed array. Numeric
+input to `Pauli(...)` or `toZXArray(...)` always denotes a bit/eigenvalue
+representation, so packed input must use `from_raw`. Raw aliases are advanced
+interfaces: callers must preserve widths, shapes, and valid packed values.
+
+Legacy arrays and `PauliInt`/`PauliIntCollection` encode only real signs.
+Exporting an object with an imaginary phase through `.legacy_array()`,
+`.pauliint_collection()`, `.data`, or `.packed_values` raises an error.
+`.kernel_args()` supports all phases and returns independent contiguous
+chunk buffers; it is not a zero-copy view. Legacy export above 31 qubits also
+raises instead of truncating.
+
+## Center, centralizer, and stabilizers
+
+For a support space S, the center is S intersect S-perp; the full ambient
+centralizer is S-perp. The distinction matters even for one generator:
+
+```python
+s = toZXArray(["XI"])
+assert len(s.center()) == 1
+assert len(s.centralizer()) == 3
+assert np.all(s.centralizer().commutation_matrix(s))
+
+# XX * ZZ = -YY, so the signs of a stabilizer relation matter.
+valid = toZXArray(["XX", "ZZ", "-YY"]).stabilizer_basis()
+assert len(valid) == 2
+# toZXArray(["XX", "ZZ", "YY"]).stabilizer_basis() raises: group contains -I.
+```
+
+| Interface | Meaning and return format |
 | --- | --- |
-| `toZX(input_data, fast_input_type=None)` | Parse Pauli strings, tuples, binary strings, or binary arrays into legacy packed form. |
-| `toString(integer_rep)` | Convert a legacy packed array to signed Pauli strings. |
-| `symplectic_inner_product(a, b, k=None)` | Compute the legacy symplectic inner product. |
-| `commutes(a, b, length=None)` | Test whether two legacy operators commute. |
-| `bsip_array(...)` / `commute_array_fast(...)` | Build dense pairwise symplectic or commutation matrices. |
-| `right_pad(...)` / `left_pad(...)` / `append(...)` | Resize or combine packed legacy forms. |
+| `ZXArray.support_basis()` | Independent GF(2) support basis; deliberately discards phases. |
+| `ZXArray.center()` | Center support basis, as positive canonical Pauli representatives. |
+| `ZXArray.centralizer()` | Full ambient commuting support basis, as positive representatives. |
+| `ZXArray.stabilizer_basis()` | Phase-preserving basis; requires commuting Hermitian generators and rejects a -I relation. |
+| `row_reduce(raw)` / `generators(raw)` | Historical packed support reduction; not signed stabilizer reduction. |
+| `center(raw)` | Center basis as a binary Z|X matrix. |
+| `ambient_centralizer(raw)` | Full ambient centralizer as a binary Z|X matrix. |
+| `centralizer(raw)` | Compatibility alias for the historical **center** behavior. |
+| `radical(raw, reduced=False)` | Coefficient null space of the Gram matrix of `row_reduce(raw)`; with `reduced=True`, coefficients refer to the supplied rows. |
+| `stabilizer_reduce(raw)` | Phase-preserving packed stabilizer basis, up to 31 qubits. |
+| `stabilizer_reduce_bits(z, x, phases)` | Phase-preserving array kernel for any width. |
 
-`toZX` accepts ordinary Pauli strings such as `"-XYZI"`, lists of strings,
-indexed tuples such as `[("X", 0), ("Z", 2)]`, and `Z|X` binary arrays. For
-validated high-throughput inputs, `fast_input_type` accepts:
+The existing compiled `centralizer` name retains its historical semantics to
+avoid silently changing downstream calculations. Migrate callers deliberately
+to `center` or `ambient_centralizer`. Object group methods work with either
+backend. Support-space methods do not certify a signed stabilizer state.
 
-- `"binary_string"` for `Z|X` strings containing only `0` and `1`;
-- `"eigen_z"` for arrays of `-1/+1` eigenvalues, where `-1` sets a Z bit.
+Other packed utilities include `null_space`, `inner_product`, `ingroup`,
+`differences`, and `row_space`. `row_space` returns an independent binary Z|X
+basis; it does not enumerate all combinations of generators.
 
-The fast modes bypass input validation, so use them only when the encoding is
-known to be correct.
+## Legacy parsing and conventions
 
-## Group and stabilizer operations
+`toZX(...)` produces packed arrays; `toZX_extended(...)` chooses packed or
+chunked storage. Their numeric `encoding="auto"` mode remains for compatibility:
+if any entry is -1, the complete array is interpreted as +/-1 eigenvalues;
+otherwise it is interpreted as 0/1 bits. Prefer `encoding="bits"` or
+`encoding="eigenvalues"` in new code. `fast_input_type="binary_string"` and
+`"eigen_z"` select the specialized Z|X-string and Z-only-eigenvalue paths.
 
-Functions in the group-theory workflow operate on packed legacy arrays:
+Legacy string lists and scalar pair comparisons retain historical right
+padding. Legacy parsers accept real signs only. Use the object constructors
+for full phases and explicit width handling.
 
-| Function | Purpose |
-| --- | --- |
-| `row_reduce(paulis)` / `generators(paulis)` | Find an independent GF(2) basis. |
-| `row_space(paulis)` | Enumerate the row space. |
-| `null_space(matrix)` | Compute a GF(2) null space. |
-| `inner_product(paulis)` | Compute the pairwise symplectic inner-product matrix. |
-| `radical(paulis, reduced=False)` | Find the center/radical of a Pauli set. |
-| `centralizer(paulis, reduced=False)` | Find operators commuting with a Pauli set. |
-| `differences(paulis, paulis2=None)` | Compute within-set or pairwise relative differences. |
-| `ingroup(candidates, pauli_set, reduced=False)` | Test membership in the generated span. |
+The raw `commutes` array interface retains its historical first-operator
+behavior for collections. Use pairwise matrix functions for whole collections;
+single-operator object methods reject multirow operands.
 
-For measurement and purity workflows, the package also exports
-`filtered_purity`, `filtered_purity_reference`, `get_purity`,
-`get_pauli_obs`, `get_pauli_pauli_obs`, `Pauli_expectation`, and
-`getCentralizer`.
+`bsip_array(raw)` and the historical large `commutation_matrix(collection)`
+use 1=anticommutes. `commute_array_fast(raw)` uses 1=commutes. Their optional
+`parallel=True` paths preserve those existing meanings. Object methods use
+consistent named conventions described above.
+
+## Bell-outcome estimators
+
+`get_pauli_obs(P, probs)` evaluates
+`sum_s p(s) (-1)^(sign(P) + Y(P) + symplectic(P,s))`, where Y is the number
+of Y factors modulo two. `get_pauli_pauli_obs` adds Y(s) to that exponent.
+These are explicit Bell-outcome conventions, not generic state-expectation
+reconstruction. Outcome signs are ignored; an observable's minus sign negates
+its estimate. Observables can be strings, packed arrays, or real-phase objects
+of up to 31 qubits. Both functions accept `parallel=True`.
+
+Probabilities must be finite, nonnegative, nonempty, and sum to one within
+rounding tolerance. Normalize counts explicitly before passing them.
+`Pauli_expectation(shots, P)` computes the first convention for one observable;
+`shots` contains `(packed_outcome, probability)` rows. Preserve large packed
+integers in nested rows or object arrays; float storage is rejected at its
+consecutive-integer precision boundary.
+
+`getCentralizer(counts)` retains the historical center-of-differences result
+and now uses packed kernels without Galois. `filtered_purity`,
+`filtered_purity_reference`, and `get_purity` document their Bell-parity
+conventions in their docstrings.
 
 ## Persistent storage
 
-`save_pauli_data` writes a checksum-validated, log-structured archive. The
-archive supports both legacy arrays and large `PauliIntCollection` batches;
-`ZXArray` values are accepted as well. Records contain NumPy-compatible
-payloads and preserve the representation selected for the file.
-
 ```python
-from paulitools import iter_pauli_records, load_pauli_data, save_pauli_data
+from paulitools import save_pauli_data, append_pauli_data, load_pauli_data
 
-save_pauli_data(
-    "measurements.ptstore",
-    toZXArray(["XX", "YY"]),
-    user_metadata={"experiment": 42},
-)
-
-data, metadata = load_pauli_data(
-    "measurements.ptstore",
-    include_metadata=True,
-)
-
-for batch in iter_pauli_records("measurements.ptstore"):
-    print(batch)
+save_pauli_data("operators.ptstore", operators,
+                user_metadata={"experiment": 42})
+append_pauli_data("operators.ptstore", toZXArray(["-YY"]))
+restored, metadata = load_pauli_data(
+    "operators.ptstore", as_zxarray=True, include_metadata=True)
+assert restored.to_strings() == ["+XX", "+ZZ", "-YY"]
 ```
 
-Appending requires matching representation and qubit dimensions. Use a new
-archive when those dimensions change.
+Archives contain checksummed records and preserve their packed or chunked
+backend. Appends require matching width and representation. Cooperating
+writers acquire an operating-system file lock before initialization,
+validation, and writing; this also protects simultaneous creation. Reads
+should occur after writers finish: a read during an append is not a snapshot.
+Checksums detect incomplete/corrupted records, but writes are not crash-atomic.
 
-## Performance notes
+The existing version-1 format supports real signs only. Saving an imaginary
+phase raises before modifying the destination. A versioned full-phase storage
+format remains follow-up work. `iter_pauli_records(path)` streams raw batches;
+default `load_pauli_data` still returns the original raw representation.
 
-- Most hot-path conversions, symplectic checks, and packed group operations are
-  Numba-compiled.
-- The first call to a compiled function may incur JIT compilation overhead.
-- `PAULITOOLS_NUMBA_CACHE=1` enables Numba disk caching; caching is disabled by
-  default in editable/development contexts.
-- Dense commutation matrices require quadratic storage in the number of
-  operators, while packed/chunked operator storage scales with the number of
-  operators and qubit chunks.
+`load_legacy_payload(path, *, include_metadata=False)` is a separate reader
+for historical opaque int64 payload archives, including Robels' physical
+Harvard readouts. It preserves every bit and validates structure/checksums,
+but returns data that may not be valid packed Paulis. Use the consumer's
+dataset decoder next; normal Pauli readers and writers remain strict.
 
-## Demos
+## Performance and development
 
-The Pauli branching demo can be run from the repository root:
+- Keep arithmetic in batches; object construction and formatting run in Python.
+- Packed/chunked symplectic kernels use bit operations and compiled popcounts.
+  Numeric batch multiplication and matrix/estimator kernels release the GIL.
+- Threaded matrix and estimator paths are opt-in. They may be slower for small
+  workloads; crossover thresholds have not been established by benchmarks.
+- Dense pairwise matrices require quadratic output storage. GF(2) reduction
+  still has sequential pivot dependencies; it is not advertised as parallel.
+- The first call includes JIT compilation. `PAULITOOLS_NUMBA_CACHE=1` enables
+  disk caching; the default remains off for editable development.
+- Run `NUMBA_BOUNDSCHECK=1 NUMBA_NUM_THREADS=2 python -m pytest` for the guarded
+  validation configuration. No floating-point fast-math is used for algebra.
 
-```bash
-python -m demos.pauli_branching_demo
-```
-
-See [`demos/README.md`](demos/README.md) for command-line arguments and the
-demo workflow.
-
-## Applications
-
-PauliTools is intended for quantum error correction, stabilizer-code analysis,
-quantum simulation, Pauli Hamiltonian workflows, and other research code that
-needs repeated Pauli-string operations.
+See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for scope, validation,
+and remaining work. The optional branching demo is documented in
+[demos/README.md](demos/README.md).
