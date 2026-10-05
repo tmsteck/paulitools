@@ -103,3 +103,6 @@ __all__ = [
     'commuting_mask', 'bell_filter_mask', 'bell_purity', 'bell_filtered_purity',
     'symplectic_fwht',
 ]
+
+from .bell_sampling import prefix_center_intersection_ranks
+__all__.append("prefix_center_intersection_ranks")

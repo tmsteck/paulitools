@@ -19,3 +19,6 @@ __all__ = [
     "BellSamplePool", "BellFilterState", "SupportBasis", "SupportSampler",
     "symplectic_fwht",
 ]
+
+from .prefix_geometry import prefix_center_intersection_ranks
+__all__.append("prefix_center_intersection_ranks")
